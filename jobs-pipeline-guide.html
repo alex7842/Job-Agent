@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Kafka + Temporal Job Pipeline — Complete Guide</title>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #161d2e; --panel2: #1c2539; --line: #2a3652;
+    --txt: #e6ecf7; --dim: #9db0cc; --accent: #4fc3f7; --good: #66e2a8;
+    --warn: #ffd166; --bad: #ff7b72; --kafka: #e8890c; --temporal: #7d6cf0;
+    --code: #0b0f1a;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--txt); line-height: 1.6; font-size: 16px;
+  }
+  header.hero {
+    padding: 40px 20px 28px; text-align: center;
+    background: linear-gradient(160deg, #141b2e 0%, #0f1420 100%);
+    border-bottom: 1px solid var(--line);
+  }
+  header.hero h1 { margin: 0 0 6px; font-size: 2rem; letter-spacing: .3px; }
+  header.hero p { margin: 0 auto; max-width: 820px; color: var(--dim); font-size: 1.02rem; }
+  .tagrow { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 14px; }
+  .tag { font-size: .78rem; padding: 3px 10px; border-radius: 20px; border: 1px solid var(--line); color: var(--dim); }
+  .tag.k { border-color: rgba(232,137,12,.5); color: #ffd9a0; }
+  .tag.t { border-color: rgba(125,108,240,.5); color: #c9c0ff; }
+
+  nav.toc {
+    position: sticky; top: 0; z-index: 50; background: rgba(15,20,32,.92); backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--line); padding: 8px 12px; overflow-x: auto; white-space: nowrap;
+  }
+  nav.toc a { color: var(--accent); text-decoration: none; font-size: .85rem; margin: 0 10px; }
+  nav.toc a:hover { text-decoration: underline; }
+
+  main { max-width: 1000px; margin: 0 auto; padding: 20px 18px 90px; }
+  section { margin-top: 46px; }
+  h2 { font-size: 1.45rem; border-left: 4px solid var(--accent); padding-left: 12px; margin-top: 8px; }
+  h2 .num { color: var(--accent); }
+  h3 { font-size: 1.12rem; margin: 26px 0 8px; color: #cfe4ff; }
+  p { margin: 8px 0; }
+  .dim { color: var(--dim); }
+  .lead { color: var(--dim); font-size: 1.02rem; }
+
+  .dlg { background: white; color: #0f1420; border-radius: 10px; padding: 14px; font-size: .85rem; }
+  .dlg.caption { background: var(--panel2); color: var(--dim); border: 1px solid var(--line); }
+
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin: 14px 0; }
+  .box.warn { border-color: rgba(255,209,102,.45); }
+  .box.bad  { border-color: rgba(255,123,114,.45); }
+  .box.good { border-color: rgba(102,226,168,.45); }
+  .box h4 { margin: 0 0 6px; font-size: .95rem; }
+  .box p { margin: 6px 0; }
+
+  pre { background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px;
+        overflow-x: auto; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .83rem; color: #cfe4ff; line-height: 1.5; }
+  code { font-family: "SF Mono", Menlo, Consolas, monospace; background: var(--code); border: 1px solid var(--line);
+         padding: 1px 6px; border-radius: 5px; font-size: .85em; color: #ffe0a3; }
+  pre code { background: none; border: none; padding: 0; color: inherit; }
+  .com { color: #6b82a8; }
+  .key { color: #ffd166; }
+
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: .9rem; }
+  th, td { text-align: left; padding: 8px 10px; border: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--panel2); color: #cfe4ff; }
+  tr:nth-child(even) td { background: rgba(22,29,46,.6); }
+
+  /* ---------- diagrams (pure CSS/SVG) ---------- */
+  .diagram { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin: 16px 0; overflow-x: auto; }
+  .dflow { display: flex; align-items: stretch; justify-content: center; gap: 0; flex-wrap: wrap; min-width: 640px; }
+  .dn { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+        background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; min-width: 96px; text-align: center; }
+  .dn .t { font-weight: 600; font-size: .9rem; color: #e6ecf7; }
+  .dn .s { font-size: .72rem; color: var(--dim); }
+  .dn.k  { border-color: rgba(232,137,12,.55); }
+  .dn.t  { border-color: rgba(125,108,240,.55); }
+  .dn.d  { border-color: rgba(102,226,168,.45); }
+  .dn.r  { border-color: rgba(255,123,114,.55); }
+  .dn.w  { border-color: rgba(255,209,102,.55); }
+  .arrow { align-self: center; color: var(--dim); font-size: 1.2rem; padding: 0 6px; flex: 0 0 auto; }
+  .arrow b { color: var(--accent); display: block; text-align: center; font-size: 1.1rem; }
+  .arrow i { font-style: normal; display: block; font-size: .7rem; color: var(--dim); max-width: 80px; text-align: center; }
+
+  .pcols { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .pcol { border: 1px solid var(--line); border-radius: 10px; width: 220px; overflow: hidden; }
+  .pcol > .phead { background: var(--panel2); padding: 4px 10px; font-size: .8rem; font-weight: 600; text-align: center; }
+  .pcol .rows { display: flex; flex-direction: column; }
+  .pcol .r { border-top: 1px dashed var(--line); padding: 5px 10px; font-size: .74rem; display: flex; justify-content: space-between; color: var(--dim); }
+  .pcol .r .off { color: var(--accent); font-family: Menlo, Consolas, monospace; }
+  .pcol .r.new { background: rgba(102,226,168,.12); color: var(--good); }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: .78rem; color: var(--dim); margin: 6px 0 0; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .sw.k { background: rgba(232,137,12,.6); } .sw.t { background: rgba(125,108,240,.6); }
+  .sw.d { background: rgba(102,226,168,.5); } .sw.r { background: rgba(255,123,114,.6); } .sw.w { background: rgba(255,209,102,.6); }
+
+  ul, ol { margin: 8px 0 8px 22px; }
+  li { margin: 4px 0; }
+  .foot { margin-top: 60px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--dim); font-size: .85rem; }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>Kafka + Temporal Job Pipeline</h1>
+  <p>A complete, beginner-friendly guide: how the pieces work, how to run it, how it scales, and every edge case that matters — with diagrams.</p>
+  <div class="tagrow">
+    <span class="tag k">Kafka</span><span class="tag t">Temporal</span>
+    <span class="tag">NestJS</span><span class="tag">PostgreSQL</span><span class="tag">TypeORM</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <a href="#map">Big picture</a>
+  <a href="#glossary">Glossary</a>
+  <a href="#kafka">1 · Kafka</a>
+  <a href="#kafka-detail">1.1 Partitions &amp; keys</a>
+  <a href="#groups">1.2 Consumer groups</a>
+  <a href="#offsets">1.3 Offsets &amp; at-least-once</a>
+  <a href="#temporal">2 · Temporal workers</a>
+  <a href="#temporal-scale">2.1 Scaling workers</a>
+  <a href="#pipeline">3 · Your pipeline step by step</a>
+  <a href="#edge">4 · Edge cases</a>
+  <a href="#practical">5 · Practical runbook</a>
+  <a href="#cheat">Cheat sheet</a>
+</nav>
+
+<main>
+
+<!-- ==================== MAP ==================== -->
+<section id="map">
+  <h2><span class="num">Intro</span> — The big picture</h2>
+  <p class="lead">This app searches job sites every day, saves new jobs, and AI-scores each one against your resume. It uses <b>two different tools for two different jobs</b>:</p>
+  <div class="grid2">
+    <div class="box">
+      <h4>Temporal = the <em>orchestrator</em> (the boss)</h4>
+      <p class="dim">Decides <b>what</b> should happen and <b>when</b>: run a search every day at 10:00, for every profile, across every job source. It starts work, retries failures, and remembers everything in its history.</p>
+    </div>
+    <div class="box">
+      <h4>Kafka = the <em>water pipe</em> (the data highway)</h4>
+      <p class="dim">Carries <b>each job</b> through the pipeline like parcels on a conveyor belt: fetched → stored → scored. It lets independent processes send/receive messages without knowing each other.</p>
+    </div>
+  </div>
+
+  <div class="diagram">
+    <div class="dflow">
+      <div class="dn t"><span class="t">Temporal Server</span><span class="s">scheduler + task queue</span></div>
+      <div class="arrow">⇅<i>assigns tasks</i></div>
+      <div class="dn t"><span class="t">Temporal Worker</span><span class="s">process #2 · fetch jobs</span></div>
+      <div class="arrow">→<i>fetch</i></div>
+      <div class="dn r"><span class="t">Job Sources</span><span class="s">jsearch · adzuna · remotive · greenhouse</span></div>
+      <div class="arrow">→<i>publish raw</i></div>
+      <div class="dn k"><span class="t">Kafka</span><span class="s">jobs.raw</span></div>
+      <div class="arrow">→</div>
+      <div class="dn d"><span class="t">API process</span><span class="s">process #1 · HTTP + Kafka consumers</span></div>
+      <div class="arrow">→</div>
+      <div class="dn k"><span class="t">Kafka</span><span class="s">jobs.new · jobs.scored · jobs.dlq</span></div>
+      <div class="arrow">↕</div>
+      <div class="dn d"><span class="t">PostgreSQL</span><span class="s">profiles · jobs · search_runs</span></div>
+    </div>
+    <div class="legend">
+      <span><i class="sw t"></i>Temporal</span>
+      <span><i class="sw k"></i>Kafka</span>
+      <span><i class="sw d"></i>Database / your code</span>
+      <span><i class="sw r"></i>External world</span>
+    </div>
+  </div>
+
+  <div class="box">
+    <p><b>Why two processes?</b></p>
+    <ul>
+      <li><b>Process #1</b> = <code>npm run start:dev</code> — the HTTP API <em>and</em> the Kafka consumers. You need this always running so the website works.</li>
+      <li><b>Process #2</b> = <code>npm run dev:worker</code> — the Temporal worker. It only runs the daily search + fetches from job sites. You can run several of these, or none (then scheduled runs just wait).</li>
+    </ul>
+    <p class="dim">They never call each other directly. They meet only through Kafka and Temporal — that is the whole point: in production you can have 3 API replicas and 5 workers, and it still works the same.</p>
+  </div>
+</section>
+
+<!-- ==================== GLOSSARY ==================== -->
+<section id="glossary">
+  <h2>Glossary — words you must know</h2>
+  <table>
+    <tr><th style="width:20%">Word</th><th>Plain meaning</th></tr>
+    <tr><td><b>Topic</b></td><td>A named pipe in Kafka. In this app: <code>jobs.raw</code>, <code>jobs.new</code>, <code>jobs.scored</code>, <code>jobs.dlq</code>.</td></tr>
+    <tr><td><b>Partition</b></td><td>A topic is split into ordered lists called partitions. Messages go into one partition. Kafka can read many partitions at the same time → parallelism.</td></tr>
+    <tr><td><b>Offset</b></td><td>A message's position number <em>inside its partition</em> (0, 1, 2, …). The consumer remembers "I read up to offset 5".</td></tr>
+    <tr><td><b>Key</b></td><td>An optional value attached to a message. Same key → always the same partition → order is preserved for that key.</td></tr>
+    <tr><td><b>Consumer</b></td><td>A program that reads messages from a topic.</td></tr>
+    <tr><td><b>Consumer group</b></td><td>Several consumers working together on a topic. Partitions are split among them. Here the group is <code>job-pipeline-server</code>.</td></tr>
+    <tr><td><b>Producer</b></td><td>A program that sends messages to a topic.</td></tr>
+    <tr><td><b>Task queue</b></td><td>Temporal's "in-box" for work. In this app: <code>job-search</code>. Workers poll it.</td></tr>
+    <tr><td><b>Workflow</b></td><td>Temporal's deterministic code that decides the steps (in <code>workflows.ts</code>).</td></tr>
+    <tr><td><b>Activity</b></td><td>Ordinary code that does real work — network calls, DB writes (in <code>activities.ts</code>).</td></tr>
+    <tr><td><b>At-least-once</b></td><td>Kafka's promise: a message is delivered <em>at least</em> once — which means <b>sometimes twice</b>. Your code must be ready for duplicates.</td></tr>
+    <tr><td><b>Idempotent</b></td><td>Safe to run twice. Running "save job" twice gives the same result (no duplicate row). This app is designed to be idempotent.</td></tr>
+    <tr><td><b>DLQ</b></td><td>"Dead letter queue". A topic where failing messages go so they don't block the normal pipeline. Here: <code>jobs.dlq</code>.</td></tr>
+  </table>
+</section>
+
+<!-- ==================== KAFKA ==================== -->
+<section id="kafka">
+  <h2><span class="num">Part 1</span> — Kafka, from zero</h2>
+  <p class="lead">Kafka is a distributed log. Think of a binder:
+  every message is a page that is <b>added at the end</b> of a notebook and <b>never changed</b>.
+  When a consumer reads, it just follows the pages.</p>
+
+  <div class="box good">
+    <p><b>Analogy:</b> a Topic is a <em>playlist</em>. It is split into Partitions = separate playlists on separate speakers.
+    Multiple speakers can play different songs simultaneously (parallelism). Each playlist keeps its own order.</p>
+  </div>
+
+  <h3 id="kafka-detail">1.1 Partitions and keys — the heart of Kafka</h3>
+
+  <div class="box">
+    <h4>A topic with 3 partitions (<code>jobs.raw</code> in this app)</h4>
+    <p class="dim">Every message is stored in exactly one partition, at the end. Offsets are <b>per partition</b>, so partition 1 can have offset 7 while partition 2 has offset 2.</p>
+  </div>
+
+  <div class="diagram">
+    <div class="pcols">
+      <div class="pcol">
+        <div class="phead" style="color:#ffd9a0">Partition 0</div>
+        <div class="rows">
+          <div class="r"><span>key=profileB · job 1</span><span class="off">offset 0</span></div>
+          <div class="r"><span>key=profileC · job 1</span><span class="off">offset 1</span></div>
+          <div class="r new"><span>key=profileB · job 2</span><span class="off">offset 2 (newest)</span></div>
+        </div>
+      </div>
+      <div class="pcol">
+        <div class="phead" style="color:#ffd9a0">Partition 1</div>
+        <div class="rows">
+          <div class="r"><span>key=profileA · job 1</span><span class="off">offset 0</span></div>
+          <div class="r new"><span>key=profileA · job 2</span><span class="off">offset 1 (newest)</span></div>
+        </div>
+      </div>
+      <div class="pcol">
+        <div class="phead" style="color:#ffd9a0">Partition 2</div>
+        <div class="rows">
+          <div class="r"><span>… empty …</span><span class="off">—</span></div>
+        </div>
+      </div>
+    </div>
+    <p class="dim" style="margin-top:10px;font-size:.8rem">Notice: messages with the <b>same key</b> (e.g. profileA) sit in the <b>same partition</b>, in order. profileB is in partition 0. profileC in partition 0 too — that is fine, they are just neighbours.</p>
+  </div>
+
+  <h3>How does Kafka choose the partition?</h3>
+  <p>A producer can send a message with a key, e.g. <code>key = profileId</code> (that is what this app does: <code>emit(topic, profileId, evt)</code>).</p>
+  <div class="diagram">
+    <div class="dflow">
+      <div class="dn"><span class="t">key "profileA"</span><span class="s">message</span></div>
+      <div class="arrow">→<i>hash(key)</i></div>
+      <div class="dn w"><span class="t">hash % 3</span><span class="s">→ partition number</span></div>
+      <div class="arrow">→</div>
+      <div class="dn k"><span class="t">Partition 1</span><span class="s">always</span></div>
+    </div>
+    <p class="dim" style="margin-top:10px;font-size:.85rem"><b>The rule:</b> <code>partition = hash(key) mod (number of partitions)</code>. Same key → same hash → same partition, always.
+    That gives you <b>two superpowers</b>:</p>
+    <ul>
+      <li><b>Order per key</b> — all messages of one profile arrive in order. Job 1 is always processed before job 2 of the same profile.</li>
+      <li><b>Fair(ish) spreading</b> — different profiles land on different partitions and are processed in parallel.</li>
+    </ul>
+    <div class="box warn">
+      <p style="margin:0"><b>Warning you saw in the logs</b> — <em>"KafkaJS v2 switched default partitioner…"</em>
+      KafkaJS changed <em>which</em> hash function it uses, but the rule above is unchanged: same key → same partition.
+      It only matters if you mix producers with different hashing algorithms and still expect identical partition numbers — which you almost never care about.</p>
+    </div>
+  </div>
+
+  <h3>Why 3 partitions here?</h3>
+  <p>In <code>kafka.config.ts</code> every pipeline topic is created with <code>numPartitions: 3</code> (the DLQ gets 1). Why 3?</p>
+  <ul>
+    <li>You can only process as many messages <em>simultaneously</em> as you have <b>consumers × partitions</b>. 3 partitions = up to 3 parallel consumers per group. That is "good enough" for a practice app.</li>
+    <li>More partitions = more parallelism, but also more files / more overhead on the broker. For most apps 3–10 is plenty.</li>
+  </ul>
+  <div class="box bad">
+    <p style="margin:0"><b>Biggest Kafka mistake</b> (know it early): a topic's partition count can be <b>changed later</b> (Kafka lets you add partitions), but adding partitions <b>changes which partition a key lands in</b> for the new count. So you cannot rely on "key X was in partition 1 forever". You can rely on "at any given moment, key X is in <em>one specific</em> partition".</p>
+  </div>
+
+  <h3 id="groups">1.2 Consumer groups — how parallel workers split partitions</h3>
+  <p>Consumers that share the same <code>groupId</code> form a group. Your whole topic's partitions are <b>exactly divided</b> among the members of the group. This is the part that makes Kafka scale.</p>
+
+  <div class="diagram">
+    <p style="margin:0 0 8px;font-size:.9rem"><b>Same group "job-pipeline-server", different number of consumers:</b></p>
+    <table>
+      <tr><th>Setup</th><th>Partition assignment</th><th>Result</th></tr>
+      <tr>
+        <td>1 consumer</td>
+        <td>Consumer A gets partitions 0,1,2</td>
+        <td>Everything processed, but one by one (limited parallelism)</td>
+      </tr>
+      <tr>
+        <td>2 consumers</td>
+        <td>A gets 0,1 &nbsp;·&nbsp; B gets 2</td>
+        <td>2x faster. Each partition still processed by exactly one member.</td>
+      </tr>
+      <tr>
+        <td>3 consumers</td>
+        <td>A→0 &nbsp;·&nbsp; B→1 &nbsp;·&nbsp; C→2</td>
+        <td>Full parallelism per partition.</td>
+      </tr>
+      <tr>
+        <td>4 consumers</td>
+        <td>A→0, B→1, C→2, D→<em>nothing</em></td>
+        <td>Consumer D sits idle — cannot happen</td>
+      </tr>
+    </table>
+    <p class="dim" style="margin-top:8px;font-size:.85rem"><b>Rule:</b> a partition is processed by <b>one</b> consumer at a time. So <code>max useful consumers = number of partitions</code>. Extra consumers just idle.</p>
+  </div>
+
+  <div class="diagram">
+    <div class="dflow">
+      <div class="dn k"><span class="t">Topic jobs.raw</span><span class="s">P0 · P1 · P2</span></div>
+      <div class="arrow">★</div>
+      <div class="dn d"><span class="t">Consumer A</span><span class="s">reads P0</span></div>
+      <div class="arrow">★</div>
+      <div class="dn d"><span class="t">Consumer B</span><span class="s">reads P1</span></div>
+      <div class="arrow">★</div>
+      <div class="dn d"><span class="t">Consumer C</span><span class="s">reads P2</span></div>
+    </div>
+    <p class="dim" style="margin-top:8px;font-size:.8rem">★ = the group leader (chosen automatically among members) decides the split. If A crashes, its partitions are handed to B and C (<em>rebalance</em>).</p>
+  </div>
+
+  <div class="box good">
+    <p><b>Practical scaling rule for this app:</b> if scoring is slow, start <em>more</em> API instances sharing group <code>job-pipeline-server</code> — up to 3 of them get partitions. Beyond that, increase partition count (or split the work differently).</p>
+  </div>
+
+  <h3 id="offsets">1.3 Offsets and the "at-least-once" promise</h3>
+  <p>Every consumer remembers, per partition, the <b>offset of the last message it finished</b>. It "commits" that number so that if it dies, the next consumer continues <em>from there</em>.</p>
+
+  <div class="diagram">
+    <div class="dflow">
+      <div class="dn k"><span class="t">Partition 0</span><span class="s">0·1·2·3·4·5·6·7</span></div>
+      <div class="arrow">→<i>committed up to offset 5</i></div>
+      <div class="dn d"><span class="t">Consumer reads 6,7</span><span class="s">then commits 7</span></div>
+    </div>
+    <p class="dim" style="margin-top:8px;font-size:.85rem">In this app the consumer uses KafkaJS <b>auto-commit</b>: it commits every few seconds, after processing. So by default it commits <em>after</em> your handler finished — but a crash in that tiny window still causes a <b>duplicate</b>.</p>
+  </div>
+
+  <div class="box warn">
+    <p><b>This is the most important thing to internalise:</b> Kafka gives <b>at-least-once</b>, not exactly-once.
+    Your <code>onRaw</code> handler can run <b>two times</b> for the same job. That is why the app is built <b>idempotent</b>:</p>
+  </div>
+  <table>
+    <tr><th>Where duplicates can enter</th><th>How this app stays safe</th></tr>
+    <tr>
+      <td>Producer retries a send (network blip) → same job published twice</td>
+      <td>DB unique constraint on <code>(profileId, dedupeHash)</code> + <code>INSERT … ON CONFLICT DO NOTHING</code> (<code>insertIfNew</code>) → second insert is ignored.</td>
+    </tr>
+    <tr>
+      <td>Consumer processed but died before committing offset → redelivery</td>
+      <td>Same dedupe constraint → no duplicate row.</td>
+    </tr>
+    <tr>
+      <td>Scoring event redelivered → job scored twice (money!)</td>
+      <td><code>if (job.scoredAt) return;</code> in <code>onNew</code> — already scored → skip.</td>
+    </tr>
+    <tr>
+      <td>User clicks "rescore" twice</td>
+      <td>Same <code>scoredAt</code> guard + dedupe. Worst case one extra LLM call, never a corrupt row.</td>
+    </tr>
+  </table>
+
+  <div class="box bad">
+    <p style="margin:0"><b>Edge case — consumer group "from latest" can miss messages:</b> this app subscribes with <code>fromBeginning: false</code>, meaning a brand-new consumer group starts at the <b>latest</b> offset.
+    If you have <em>no API running</em> during a scheduled run, the fetched jobs are still produced to <code>jobs.raw</code>. When you start the API again with a fresh group, it starts from "now" and <b>skips those old messages</b> (they do <b>not</b> expire immediately — they just aren't re-read). 
+    For a permanently-running service this is fine. If you want "process everything ever produced even if I was offline", use <code>fromBeginning: true</code> (and keep consumers running).</p>
+  </div>
+</section>
+
+<!-- ==================== TEMPORAL ==================== -->
+<section id="temporal">
+  <h2><span class="num">Part 2</span> — Temporal and the "worker"</h2>
+  <p class="lead">Temporal answers: <em>"make sure this multi-step job happens, and if anything breaks halfway, finish or retry it."</em></p>
+
+  <h3>2.1 The two kinds of code</h3>
+  <div class="diagram">
+    <div class="pcols">
+      <div class="pcol">
+        <div class="phead" style="color:#c9c0ff">Workflow code (workflows.ts)</div>
+        <div class="rows">
+          <div class="r">decides the steps</div>
+          <div class="r">must be <b>deterministic</b> — no random(), no Date.now(), no external calls</div>
+          <div class="r">is recorded in Temporal's history (replayable)</div>
+          <div class="r">calls activities via <code>proxyActivities</code></div>
+        </div>
+      </div>
+      <div class="pcol">
+        <div class="phead" style="color:#c9c0ff">Activity code (activities.ts)</div>
+        <div class="rows">
+          <div class="r">does the <b>real work</b>: HTTP fetch, DB write, Kafka publish</div>
+          <div class="r">can use any library, any code</div>
+          <div class="r">has timeouts + retries configured by the workflow</div>
+          <div class="r">returns small results (a count) that go into history</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="box">
+    <p><b>Why this split?</b> Because a Temporal workflow can run for months and must survive crashes. The server stores every "event" (activity started → result returned). If the worker dies, a new worker reloads the history and <b>replays</b> it to know where to continue. That only works if workflow code is a pure, deterministic script. All real I/O lives in activities.</p>
+  </div>
+
+  <h3>2.2 What a "worker" actually is</h3>
+  <p>A <b>worker</b> is just a process (like our <code>worker.ts</code>) that says: <em>"I am available for the task queue <code>job-search</code>. Give me workflows and activities."</em> The Temporal <b>server</b> decides who gets what.</p>
+
+  <div class="diagram">
+    <div class="dflow">
+      <div class="dn t"><span class="t">Temporal Server</span><span class="s">is the traffic controller</span></div>
+      <div class="arrow">⇅</div>
+      <div class="dn w"><span class="t">Task Queue "job-search"</span><span class="s">pending workflows + activities</span></div>
+    </div>
+    <div class="dflow" style="margin-top:12px">
+      <div class="arrow">poll&nbsp;⇅</div>
+      <div class="arrow">poll&nbsp;⇅</div>
+      <div class="arrow">poll&nbsp;⇅</div>
+    </div>
+    <div class="dflow">
+      <div class="dn t"><span class="t">Worker 1</span><span class="s">npm run dev:worker</span></div>
+      <div class="dn t"><span class="t">Worker 2</span><span class="s">another machine</span></div>
+      <div class="dn t"><span class="t">Worker 3</span><span class="s">…</span></div>
+    </div>
+    <p class="dim" style="margin-top:10px;font-size:.85rem">Any number of workers can poll the same queue. Unlike Kafka there is no "partition per consumer" limit — Temporal hands out tasks to whoever is free. <b>More workers = more work done in parallel.</b></p>
+  </div>
+
+  <h3 id="temporal-scale">2.3 Scaling a Temporal worker</h3>
+  <p>You scale in <b>two dimensions</b>:</p>
+  <ul>
+    <li><b>More worker processes</b> — just run <code>npm run dev:worker</code> on more machines/containers, all pointing at the same Temporal address + task queue. Nothing else changes.</li>
+    <li><b>More concurrency inside one worker</b> — one worker is multi-threaded and can run several workflows and activities at once. You control it in <code>Worker.create()</code> options:</li>
+  </ul>
+  <pre><code><span class="com">// worker.ts</span>
+const worker = await Worker.create({
+  taskQueue: TASK_QUEUE,
+  maxConcurrentWorkflowTaskExecutions: 100,  <span class="com">// how many workflows this process juggles</span>
+  maxConcurrentActivityTaskExecutions: 50,   <span class="com">// how many HTTP fetches at the same time</span>
+  <span class="com">// maxConcurrentLocalActivityExecutions,</span>
+  <span class="com">// activitiesPerSecond: 10,</span>
+});</code></pre>
+  <div class="box warn">
+    <p style="margin:0"><b>Edge case — the API hitting itself during a peak:</b> our <code>fetchAndPublish</code> activity opens real HTTP connections to job sites. If you raise activity concurrency a lot, you may hammer those APIs and get 429 (rate limited). Mitigation = <code>activitiesPerSecond</code> (a token bucket) or per-activity retry with backoff (already configured: <code>initialInterval 10s → backoff ×2 → max 2min, 4 attempts</code>).</p>
+  </div>
+
+  <h3>2.4 Sticky execution — one small trick</h3>
+  <p>Temporal likes to give related tasks to the <b>same worker</b> (this is called <i>sticky cache</i>) so it can reuse loaded workflow code instead of re-downloading history. It is automatic — just don't be confused when the Temporal UI shows a workflow "stuck" on one worker in the logs.</p>
+
+  <h3>2.5 The schedule (the "daily at 10:00" part)</h3>
+  <p>In <code>temporal-client.service.ts</code>, <code>ensureSchedule()</code> creates a <b>Schedule</b>:
+  cron <code>0 10 * * *</code> in <code>Asia/Kolkata</code>, <code>overlap: SKIP</code>.</p>
+  <table>
+    <tr><th>Setting</th><th>Meaning</th><th>Edge case it protects</th></tr>
+    <tr><td><code>cron</code> + <code>timezone</code></td><td>Fire at 10:00 local time every day</td><td>DST handled by Temporal server, not by your code.</td></tr>
+    <tr><td><code>overlap: SKIP</code></td><td>If a run is still going when the next one is due → skip the new one</td><td>A slow day doesn't stack 5 runs on top of each other.</td></tr>
+    <tr><td><code>triggerImmediately</code> / manual <code>POST /runs</code></td><td>Start a run right now</td><td>Testing + catching up after a long outage.</td></tr>
+    <tr><td><code>ScheduleAlreadyRunning</code> catch</td><td>Schedule already exists → treat as success</td><td>Starting the worker twice doesn't create two schedules.</td></tr>
+  </table>
+  <div class="box good">
+    <p style="margin:0"><b>Manual trigger:</b> <code>POST /runs</code> calls <code>temporal.startRun(profileId)</code> → same workflow, identical behaviour as the 10:00 run. This is how you test the whole pipeline by hand.</p>
+  </div>
+</section>
+
+<!-- ==================== PIPELINE ==================== -->
+<section id="pipeline">
+  <h2><span class="num">Part 3</span> — Your pipeline, step by step</h2>
+  <p class="lead">Now combine everything. This is exactly what your <code>jobs</code> module does, with the real file names.</p>
+
+  <div class="diagram">
+    <div class="dflow">
+      <div class="dn t"><span class="t">1. Schedule / POST /runs</span><span class="s">temporal-client.service.ts</span></div>
+      <div class="arrow">→</div>
+      <div class="dn t"><span class="t">2. Workflow</span><span class="s">workflows.ts</span></div>
+      <div class="arrow">→</div>
+      <div class="dn t"><span class="t">3. Activity fetchAndPublish</span><span class="s">activities.ts</span></div>
+      <div class="arrow">→</div>
+      <div class="dn r"><span class="t">4. Job sources</span><span class="s">HTTP</span></div>
+    </div>
+    <div class="dflow" style="margin-top:10px">
+      <div class="dn k"><span class="t">jobs.raw</span><span class="s">published, key = profileId</span></div>
+      <div class="arrow">→</div>
+      <div class="dn d"><span class="t">5. onRaw()</span><span class="s">filter → dedupe → INSERT</span></div>
+      <div class="arrow">→</div>
+      <div class="dn d"><span class="t">PostgreSQL jobs</span><span class="s">1 row per unique job</span></div>
+    </div>
+    <div class="dflow" style="margin-top:10px">
+      <div class="dn k"><span class="t">jobs.new</span><span class="s">published if new</span></div>
+      <div class="arrow">→</div>
+      <div class="dn d"><span class="t">6. onNew()</span><span class="s">guard scoredAt → LLM score</span></div>
+      <div class="arrow">→</div>
+      <div class="dn d"><span class="t">PostgreSQL</span><span class="s">score saved</span></div>
+      <div class="arrow">→</div>
+      <div class="dn k"><span class="t">jobs.scored</span><span class="s">future: websocket/notify</span></div>
+    </div>
+    <div class="dflow" style="margin-top:10px">
+      <div class="dn k"><span class="t">jobs.dlq</span><span class="s">any error from step 5 or 6</span></div>
+      <div class="arrow">↕</div>
+      <div class="dn r"><span class="t">investigate later</span><span class="s">nothing blocks the pipeline</span></div>
+    </div>
+  </div>
+
+  <h3>Why each step exists (the design reasoning)</h3>
+  <table>
+    <tr><th>Step</th><th>Why it is separate</th><th>What breaks if you remove it</th></tr>
+    <tr>
+      <td>Temporal workflow + activities</td>
+      <td>Retries/backoff for fragile HTTP fetches, keeps a search-run record per day, survives crashes</td>
+      <td>A failing source would kill the whole daily run with no retry, and you'd lose the audit trail</td>
+    </tr>
+    <tr>
+      <td><code>jobs.raw → jobs.new</code></td>
+      <td>Fetching (slow, many) is decoupled from storing (fast, deduped)</td>
+      <td>A slow source would block/slow storing; duplicates would pile up because dedupe wouldn't run per-message</td>
+    </tr>
+    <tr>
+      <td><code>jobs.new → jobs.scored</code></td>
+      <td>LLM calls are costly + slow; they must be retried idempotently and must never block ingestion</td>
+      <td>A slow/violating LLM would back up the queue and never store; you'd pay for duplicate scoring on redelivery</td>
+    </tr>
+    <tr>
+      <td><code>jobs.dlq</code></td>
+      <td>A poison job (malformed / LLM out of context / DB hiccup) goes to its own box</td>
+      <td>One bad message would be retried forever / block its partition / flood your logs</td>
+    </tr>
+  </table>
+
+  <div class="box good">
+    <p><b>The "search run" bookkeeping:</b> the workflow calls <code>startRun()</code> (creates a <code>search_runs</code> row) and <code>finishRun()</code> (writes <code>{source: {fetched, error?}}</code> + status completed/partial/failed). This gives you a daily report of which platform worked — without reading any job payloads.</p>
+  </div>
+</section>
+
+<!-- ==================== EDGE CASES ==================== -->
+<section id="edge">
+  <h2><span class="num">Part 4</span> — Edge cases, sorted by "what can actually bite you"</h2>
+
+  <h3>Kafka side</h3>
+  <table>
+    <tr><th>Edge case</th><th>What happens</th><th>How this app survives / what to do</th></tr>
+    <tr>
+      <td>Duplicate message (producer retry / consumer crash → redelivery)</td>
+      <td>Same job arrives 2×</td>
+      <td>Unique <code>(profileId, dedupeHash)</code> + ON CONFLICT DO NOTHING → stored once. <code>scoredAt</code> guard → scored once.</td>
+    </tr>
+    <tr>
+      <td>Poison message (job that always throws)</td>
+      <td>Handler throws, message retried</td>
+      <td>Caught → pushed to <code>jobs.dlq</code>, consumer keeps moving. Score errors also saved on the row as <code>scoreError</code>.</td>
+    </tr>
+    <tr>
+      <td>Consumer crashes mid-message</td>
+      <td>Offset not committed → message redelivered</td>
+      <td>At-least-once + idempotency = acceptable duplicate, no loss.</td>
+    </tr>
+    <tr>
+      <td>API offline during a scheduled run</td>
+      <td>Jobs published to <code>jobs.raw</code>, nobody reading them</td>
+      <td>Messages sit on the broker (retention ~days–weeks). New consumer with <code>fromBeginning:false</code> starts at latest → <b>those messages are skipped</b>. Decide deliberately: keep an API always on, or flip to <code>fromBeginning:true</code>.</td>
+    </tr>
+    <tr>
+      <td>Hot key / partition skew</td>
+      <td>One profile has way more jobs → its partition is busier than others</td>
+      <td>Ordering still holds (good). Over time that partition lags. Mitigation: more partitions, or a more granular key (e.g. <code>profileId | source</code>) — but then per-profile order can interleave across sources.</td>
+    </tr>
+    <tr>
+      <td>Kafka down at API boot</td>
+      <td><code>ensureKafkaTopics()</code> fails → API fails to start</td>
+      <td>Current design: hard requirement. For resilience you could catch and retry, or boot HTTP-first and connect consumers later (more code).</td>
+    </tr>
+    <tr>
+      <td>Auto-created topic vs configured partitions</td>
+      <td>Broker may auto-create a topic with 1 partition if it doesn't exist</td>
+      <td><code>ensureKafkaTopics()</code> runs on boot and creates the right counts (3 / DLQ 1). Don't rely on auto-creation.</td>
+    </tr>
+    <tr>
+      <td>Group rebalance storms (many restarts)</td>
+      <td>Each join/leave reassigns partitions, briefly pausing processing</td>
+      <td>KafkaJS default <code>session.timeout</code> + our 1 consumer group. Restarting the API frequently causes tiny rebalances — harmless here; in prod prefer rolling deploys.</td>
+    </tr>
+  </table>
+
+  <h3>Temporal side</h3>
+  <table>
+    <tr><th>Edge case</th><th>What happens</th><th>How this app survives / what to do</th></tr>
+    <tr>
+      <td>One source API is down</td>
+      <td><code>fetchAndPublish</code> activity fails</td>
+      <td>Activity retries 4× with backoff, then <code>Promise.allSettled</code> lets the workflow continue; run is marked <code>partial</code> with the error in stats.</td>
+    </tr>
+    <tr>
+      <td>Worker restarts mid-workflow</td>
+      <td>Workflow "pauses"</td>
+      <td>Server stores history; next worker replays and continues exactly where it stopped. No lost steps.</td>
+    </tr>
+    <tr>
+      <td>Long outage → catches up many runs</td>
+      <td>Schedule fires anyway (overlap SKIP)</td>
+      <td>Only one run happens at a time; <code>catchupWindow</code> bounds how much it tries to make up.</td>
+    </tr>
+    <tr>
+      <td>Temporal server down, API healthy</td>
+      <td>API still serves GET/POST /jobs</td>
+      <td><code>Connection.lazy</code> — only <code>POST /runs</code> (manual trigger) fails until server returns.</td>
+    </tr>
+    <tr>
+      <td>Two workers try to run the same schedule</td>
+      <td>Duplicate schedule creation</td>
+      <td><code>ScheduleAlreadyRunning</code> → treated as "already exists". Idempotent.</td>
+    </tr>
+    <tr>
+      <td>Workflow code accidentally does I/O</td>
+      <td>Replay produces different results → corruption</td>
+      <td>Don't. All I/O stays in activities (that's the design).</td>
+    </tr>
+  </table>
+
+  <h3>App-level edge cases</h3>
+  <table>
+    <tr><th>Edge case</th><th>What happens</th><th>What to do</th></tr>
+    <tr>
+      <td>No <code>ANTHROPIC_API_KEY</code></td>
+      <td>Scorer fails → job gets <code>scoreError</code> + DLQ message</td>
+      <td>Set the key in <code>.env</code> and re-score (<code>POST /jobs/:id/rescore</code>).</td>
+    </tr>
+    <tr>
+      <td>LLM returns non-JSON</td>
+      <td>Scorer throws "Scorer returned no JSON"</td>
+      <td>Handled: error saved on row + DLQ. A retry later usually works; consider a system prompt tweak if frequent.</td>
+    </tr>
+    <tr>
+      <td>Same job from 2 platforms (e.g. LinkedIn via JSearch + company's Greenhouse)</td>
+      <td>Two <code>RawJobEvent</code>s, same company+title+location</td>
+      <td><code>dedupeHash</code> makes them collide → one row. The dedupe treats them as equal by design.</td>
+    </tr>
+    <tr>
+      <td>Empty preferences (roles: [])</td>
+      <td>Remotive fetches 0 jobs (loop over roles)</td>
+      <td>Expected. Configure roles/skills in <code>PUT /profile</code> first.</td>
+    </tr>
+    <tr>
+      <td>Negative <code>TimeoutNegativeWarning</code> in logs</td>
+      <td>A harmless node warning from a big timeout number</td>
+      <td>Ignore; it does not affect the pipeline.</td>
+    </tr>
+    <tr>
+      <td>Observe 401 telemetry errors</td>
+      <td>Placeholder <code>YOUR_APP_KEY</code>/<code>YOUR_APP_SECRET</code></td>
+      <td>Either sign up at observe.nestjs.com and set real keys, or remove the ObserveModule.</td>
+    </tr>
+  </table>
+</section>
+
+<!-- ==================== PRACTICAL ==================== -->
+<section id="practical">
+  <h2><span class="num">Part 5</span> — Practical runbook (do this on YOUR machine)</h2>
+
+  <h3>5.1 Start every service</h3>
+  <pre><code><span class="com"># 1) Postgres + Temporal + Kafka (Postgres &amp; Temporal already run in your pk-* containers)</span>
+docker compose up -d          <span class="com"># starts Kafka (localhost:9092)</span>
+
+<span class="com"># 2) terminal A — API + Kafka consumers (HTTP on :3000)</span>
+npm run start:dev
+
+<span class="com"># 3) terminal B — Temporal worker + daily schedule</span>
+npm run dev:worker
+</code></pre>
+
+  <h3>5.2 Click through the app</h3>
+  <pre><code><span class="com"># Create/read your profile</span>
+curl localhost:3000/profile
+
+<span class="com"># Give it skills and roles (so sources have something to search)</span>
+curl -X PUT localhost:3000/profile -H 'Content-Type: application/json' -d '{
+  "resumeText": "I am a full stack dev, strong in React, Node, PostgreSQL.",
+  "preferences": { "roles": ["Full Stack Developer"], "skills": ["React","Node.js"], "locations": ["Remote"], "remoteOnly": true }
+}'
+
+<span class="com"># Trigger a search NOW (same code path as the 10:00 schedule)</span>
+curl -X POST localhost:3000/runs
+
+<span class="com"># Read the results</span>
+curl "localhost:3000/jobs?sort=score"
+curl localhost:3000/runs
+</code></pre>
+
+  <h3>5.3 Inspect Kafka (prove the pipe works)</h3>
+  <pre><code><span class="com"># List topics and partitions</span>
+docker exec pk-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
+docker exec pk-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe
+
+<span class="com"># Watch messages live (replace with your topic)</span>
+docker exec pk-kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 --topic jobs.raw --from-beginning
+
+<span class="com"># See consumer lag (is a consumer keeping up?)</span>
+docker exec pk-kafka /opt/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server localhost:9092 --describe --group job-pipeline-server
+</code></pre>
+
+  <h3>5.4 Inspect Temporal (prove the boss works)</h3>
+  <ul>
+    <li>Open the Web UI: <b>http://localhost:8080</b> (the <code>pk-temporal-ui</code> container).</li>
+    <li>You'll see the daily-workflow executions, their history, retries, and the schedule <code>daily-job-search</code>.</li>
+  </ul>
+
+  <h3>5.5 Check the database</h3>
+  <pre><code>psql -h localhost -U postgres -d task_app
+SELECT status, count(*) FROM jobs GROUP BY status;
+SELECT * FROM search_runs ORDER BY "startedAt" DESC LIMIT 5;
+SELECT * FROM jobs WHERE "scoreError" IS NOT NULL LIMIT 5;</code></pre>
+
+  <h3>5.6 Scale it — answer these 3 questions</h3>
+  <table>
+    <tr><th>"It's slow because…"</th><th>Answer</th></tr>
+    <tr><td>too many jobs queued/un-scored</td><td>Run more API replicas sharing group <code>job-pipeline-server</code> (max 3 without adding partitions) — each handles a partition in parallel.</td></tr>
+    <tr><td>fetching takes forever / scraping hits rate limits</td><td>Add worker concurrency (<code>maxConcurrentActivityTaskExecutions</code>) or throttle (<code>activitiesPerSecond</code>); add more workers on the same queue.</td></tr>
+    <tr><td>expected to grow way bigger</td><td>Increase partitions (new topic or admin alter) — then up to N consumers can run.</td></tr>
+  </table>
+</section>
+
+<!-- ==================== CHEAT ==================== -->
+<section id="cheat">
+  <h2>Cheat sheet — one-line rules to remember</h2>
+  <ul>
+    <li><b>Same key → same partition → order preserved for that key.</b></li>
+    <li><b>Max active consumers per group = number of partitions.</b></li>
+    <li><b>Kafka = at-least-once → your handlers MUST be idempotent.</b> (Dedupe-constraint + <code>scoredAt</code> guard.)</li>
+    <li><b>Poison messages go to the DLQ, never block the pipe.</b></li>
+    <li><b>Workflow = deterministic; Activity = real I/O + retries.</b></li>
+    <li><b>More Temporal workers = more parallel work; no partition limit.</b></li>
+    <li><b>Schedules: overlap SKIP, idempotent create, manual <code>POST /runs</code> for testing.</b></li>
+    <li><b>If you were offline and use <code>fromBeginning:false</code>, old Kafka messages are skipped — decide deliberately which behaviour you want.</b></li>
+  </ul>
+</section>
+
+<div class="foot">
+  Generated for the <code>task-app</code> project · files: <code>src/jobs</code>, <code>src/kafka</code>, <code>src/temporal</code>, <code>docker-compose.yml</code>.
+  Open this in any browser — it is fully offline (no external assets).
+</div>
+
+</main>
+</body>
+</html>
