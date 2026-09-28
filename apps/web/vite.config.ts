@@ -11,6 +11,18 @@ export default defineConfig(({ mode }) => {
   const rootEnv = loadEnv(mode, fileURLToPath(new URL('../..', import.meta.url)), '');
   const apiTarget = process.env.API_URL ?? rootEnv.API_URL ?? `http://localhost:${API_PORT}`;
 
+  // The web app only ever talks to /api, so every server that serves it proxies
+  // through to NestJS and the browser never deals with CORS or a second origin.
+  // `dev` uses it, and so does `vite preview`, which is what the deploy target
+  // runs — so a deployed build behaves identically to local development.
+  const apiProxy = {
+    '/api': {
+      target: apiTarget,
+      changeOrigin: true,
+      rewrite: (path: string) => path.replace(/^\/api/, ''),
+    },
+  };
+
   return {
     plugins: [react(), tailwindcss()],
     resolve: {
@@ -20,15 +32,12 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 5173,
-      // The web app only ever talks to /api, so the dev server proxies to NestJS
-      // and the browser never deals with CORS or a second origin.
-      proxy: {
-        '/api': {
-          target: apiTarget,
-          changeOrigin: true,
-          rewrite: (path) => path.replace(/^\/api/, ''),
-        },
-      },
+      proxy: apiProxy,
+    },
+    preview: {
+      host: true,
+      port: 5173,
+      proxy: apiProxy,
     },
     build: {
       outDir: 'dist',

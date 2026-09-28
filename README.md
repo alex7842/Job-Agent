@@ -118,8 +118,8 @@ Temporal (7233) are already running on your machine, start only the database wit
 `pnpm infra:up:db` — the compose file binds fixed ports and will fail otherwise.
 
 The Vite dev server prints its port; it defaults to 5173 but steps up if that is
-taken. All API traffic goes to `/api`, which Vite proxies to `PORT` in dev and a
-reverse proxy handles in production.
+taken. All API traffic goes to `/api`, which Vite proxies to `PORT` in both `dev`
+and `preview`, so a deployed build behaves exactly like development.
 
 ### Everything else
 
@@ -129,6 +129,54 @@ pnpm build                             # build every package
 pnpm lint / typecheck / test           # run across the workspace
 pnpm --filter job-agent migration:run  # real migrations (set DB_SYNC=false in prod)
 ```
+
+## CI/CD
+
+Two GitHub Actions workflows, one deploy target.
+
+| Workflow                   | Trigger                        | What it does                                          |
+| -------------------------- | ------------------------------ | ----------------------------------------------------- |
+| `.github/workflows/ci.yml` | every push to `main`, every PR | format, typecheck, lint, test, build                  |
+| `.github/workflows/cd.yml` | push to `main`, or manual      | build, then rsync + restart on the single deploy host |
+
+CI installs with `--frozen-lockfile` and caches Turborepo's `.turbo` directory.
+Add a `TURBO_TEAM` repository variable and a `TURBO_TOKEN` secret to enable Vercel
+Remote Caching — the workflows already pass them through, and CI works without them.
+
+### The deploy target
+
+CD ships source, not `node_modules`: `@temporalio/core-bridge` and `@swc/core` are
+native modules built for the target's own CPU and OS, so the host runs
+`pnpm install --frozen-lockfile && pnpm build` itself. The host's `.env` is
+excluded from the sync and `--delete-excluded` is never passed, so your secrets and
+infrastructure addresses survive every release.
+
+Configure it once under **Settings → Environments → production**:
+
+| Kind     | Name             | Value                                           |
+| -------- | ---------------- | ----------------------------------------------- |
+| variable | `DEPLOY_HOST`    | host name or IP                                 |
+| variable | `DEPLOY_USER`    | ssh user                                        |
+| variable | `DEPLOY_PATH`    | absolute app directory, e.g. `/opt/job-agent`   |
+| variable | `DEPLOY_URL`     | public base URL, e.g. `https://app.example.com` |
+| secret   | `DEPLOY_SSH_KEY` | private key for that user                       |
+
+The target host needs Node 24+, `corepack`, and `pm2` globally. The three
+processes are defined in `deploy/ecosystem.config.cjs`:
+
+| Process            | Command                        | Role                                 |
+| ------------------ | ------------------------------ | ------------------------------------ |
+| `job-agent-api`    | `node dist/main.js`            | HTTP API + Kafka consumers, `:3000`  |
+| `job-agent-worker` | `node dist/temporal/worker.js` | Temporal activity worker             |
+| `job-agent-web`    | `vite preview`                 | serves the built SPA, proxies `/api` |
+
+`pm2 startOrReload … --update-env` restarts only what changed, and the workflow
+finishes by polling `${DEPLOY_URL}/api/runs` to confirm the new build is serving.
+
+Because `DB_SYNC` is `false` in production, the deploy runs
+`pnpm --filter job-agent migration:run` as an explicit step — a database built
+purely from migrations gets the same `jobs_status_enum` and
+`search_runs_status_enum` types that `synchronize` produces in dev.
 
 ## Adding a job source
 

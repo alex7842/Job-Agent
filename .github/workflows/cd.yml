@@ -1,0 +1,131 @@
+name: CD
+
+# Single deploy environment: main is the only branch that ships, and the
+# `production` environment below is the one gate (add reviewers there if you
+# want a manual approval before anything is restarted).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: cd-production
+  # Never cancel a deploy halfway: a half-restarted stack is worse than a
+  # slow queue.
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: production
+
+    env:
+      # Repository variable, e.g. app.example.com
+      DEPLOY_URL: ${{ vars.DEPLOY_URL }}
+      # Repository variables for the target host.
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      # Repository secrets.
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Fail early if the deploy target is not configured
+        run: |
+          for v in DEPLOY_HOST DEPLOY_USER DEPLOY_PATH; do
+            if [ -z "${!v}" ]; then
+              echo "::error::$v is not set. Add it as a repository variable."
+              exit 1
+            fi
+          done
+
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      # Only source and lockfiles travel. The target does its own install and
+      # build, because @temporalio/core-bridge and @swc/core are native modules
+      # built for the target's own CPU/OS — shipping node_modules from the
+      # ubuntu runner would break an arm64 host.
+      - name: Sync source to the host
+        run: |
+          rsync -az --delete \
+            --exclude '.git' \
+            --exclude 'node_modules' \
+            --exclude 'dist' \
+            --exclude '.turbo' \
+            --exclude '*.tsbuildinfo' \
+            --exclude '.env' \
+            --exclude 'jobs-pipeline-guide.html' \
+            ./ "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/"
+        # .env is excluded from the sync, and --delete-excluded is deliberately
+        # not used, so the target's .env (secrets, DB/Kafka/Temporal addresses)
+        # survives every release.
+
+      - name: Install, build and migrate on the host
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new "${DEPLOY_USER}@${DEPLOY_HOST}" bash -s <<EOF
+          set -euo pipefail
+          cd "${DEPLOY_PATH}"
+          # The repo pins pnpm via the `packageManager` field; corepack puts the
+          # right version on PATH for the install and build below.
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm run build
+          # DB_SYNC is false in production, so schema changes are an explicit
+          # deploy step rather than a boot side effect.
+          pnpm --filter job-agent run migration:run
+          EOF
+
+      - name: Restart the three processes
+        run: |
+          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" bash -s <<EOF
+          set -euo pipefail
+          cd "${DEPLOY_PATH}"
+          # startOrReload restarts only what changed and keeps the rest up.
+          pm2 startOrReload deploy/ecosystem.config.cjs --update-env
+          pm2 save
+          pm2 status
+          EOF
+
+      - name: Smoke test the deployed stack
+        if: env.DEPLOY_URL != ''
+        run: |
+          set -euo pipefail
+          base="${DEPLOY_URL%/}"
+          for attempt in $(seq 1 10); do
+            if curl -fsS -o /dev/null "\${base}/api/runs?limit=1"; then
+              echo "API reachable through the web proxy"
+              curl -fsS -o /dev/null "\${base}/"
+              echo "Deploy verified."
+              exit 0
+            fi
+            echo "attempt \${attempt}/10: not up yet, retrying..."
+            sleep 5
+          done
+          echo "::error::Deployed stack did not answer on \${base}"
+          exit 1

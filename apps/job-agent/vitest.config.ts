@@ -5,8 +5,7 @@ export default defineConfig({
     globals: true,
     root: './',
     include: ['**/*.spec.ts'],
-    // There are no unit specs yet; the suite should not fail the `turbo run test`
-    // task just because the glob is empty.
+    // There are no unit specs yet; an empty glob should not fail `turbo run test`.
     passWithNoTests: true,
   },
 });

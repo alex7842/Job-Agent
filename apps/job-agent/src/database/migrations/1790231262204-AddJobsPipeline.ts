@@ -4,6 +4,16 @@ export class AddJobsPipeline1790231262204 implements MigrationInterface {
   name = 'AddJobsPipeline1790231262204';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
+    // The status columns below are Postgres enums. `synchronize: true` creates
+    // these types implicitly, which is why this migration used to work in dev
+    // while failing on any database built from migrations. Create them first,
+    // with the same names and labels TypeORM's schema builder produces.
+    await queryRunner.query(
+      `CREATE TYPE "public"."jobs_status_enum" AS ENUM('new', 'saved', 'applied', 'ignored')`,
+    );
+    await queryRunner.query(
+      `CREATE TYPE "public"."search_runs_status_enum" AS ENUM('running', 'completed', 'partial', 'failed')`,
+    );
     await queryRunner.query(
       `CREATE TABLE "profiles" ("id" uuid NOT NULL DEFAULT uuid_generate_v4(), "name" character varying(100) NOT NULL DEFAULT 'Me', "resumeText" text NOT NULL DEFAULT '', "preferences" jsonb NOT NULL, "isActive" boolean NOT NULL DEFAULT true, "createdAt" TIMESTAMP NOT NULL DEFAULT now(), "updatedAt" TIMESTAMP NOT NULL DEFAULT now(), CONSTRAINT "PK_8e520eb4da7dc01d0e190447c8e" PRIMARY KEY ("id"))`,
     );
@@ -23,5 +33,7 @@ export class AddJobsPipeline1790231262204 implements MigrationInterface {
     await queryRunner.query(`DROP INDEX "public"."idx_jobs_profile_status_score"`);
     await queryRunner.query(`DROP TABLE "jobs"`);
     await queryRunner.query(`DROP TABLE "profiles"`);
+    await queryRunner.query(`DROP TYPE "public"."search_runs_status_enum"`);
+    await queryRunner.query(`DROP TYPE "public"."jobs_status_enum"`);
   }
 }
