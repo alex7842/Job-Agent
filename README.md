@@ -1,18 +1,21 @@
 # job-agent
 
 A monorepo for a job-search agent: it crawls job boards on a schedule, filters and
-dedupes what it finds, and has an LLM score every posting against your resume.
+dedupes what it finds, has an LLM score every posting against your resume, and
+indexes postings and uploaded documents into a vector store for semantic matching.
 
-One deployable backend, one web app, one shared contract package, orchestrated with
-Turborepo and pnpm workspaces.
+Four apps, one shared contract package, orchestrated with Turborepo and pnpm
+workspaces.
 
 ```
 job-agent/
 ├── apps/
 │   ├── job-agent/        NestJS API + Kafka consumers + Temporal worker
+│   ├── rag-service/      document extraction, embeddings, Pinecone retrieval
 │   └── web/              Vite + React + Tailwind dashboard
 ├── packages/
 │   └── shared/           types, event contracts, API schemas (@job-agent/shared)
+├── deploy/               pm2 process definitions
 ├── docker-compose.yml    Postgres, Kafka, Temporal, Temporal UI
 ├── turbo.json            task graph + caching
 └── .env                  single env file, shared by every app
@@ -47,7 +50,7 @@ job-agent/
                                  ║  jobs.new  ║
                                  ╚═════╤══════╝
                     ┌──────────────────┴──────────────────┐
-                    │  ScorerService → Anthropic         │
+                    │  ScorerService → Gemini            │
                     │  saveScore (score, reason,          │
                     │  highlights, redFlags)              │
                     └──────────────────┬──────────────────┘
@@ -99,6 +102,10 @@ notifications or a websocket feed.
 | Stage 1 + 2 consumers        | `src/jobs/pipeline/job-pipeline.controller.ts`      |
 | Filters + dedupe hash        | `src/jobs/pipeline/filters.ts`                      |
 | LLM scoring prompt           | `src/jobs/pipeline/scorer.service.ts`               |
+| Document catalog + uploads   | `src/documents/`                                    |
+| Semantic ranking             | `src/semantic/semantic-match.service.ts`            |
+| Signed client to the RAG svc | `src/rag/rag-client.service.ts`                     |
+| Outbox write + relay         | `src/outbox/`                                       |
 | Job platforms (add one here) | `src/jobs/sources/` + `sources.registry.ts`         |
 | REST endpoints               | `src/jobs/jobs.controller.ts`, `runs.controller.ts` |
 
@@ -108,7 +115,7 @@ Requires Node 22+, pnpm 11+, and Docker.
 
 ```bash
 pnpm install
-cp .env.example .env          # then fill in ANTHROPIC_API_KEY and any source keys
+cp .env.example .env          # then fill in GEMINI_API_KEY and any source keys
 pnpm infra:up                 # Postgres + Kafka + Temporal + Temporal UI
 pnpm dev                      # API :3000, worker, and the web app
 ```
@@ -121,6 +128,15 @@ The Vite dev server prints its port; it defaults to 5173 but steps up if that is
 taken. All API traffic goes to `/api`, which Vite proxies to `PORT` in both `dev`
 and `preview`, so a deployed build behaves exactly like development.
 
+`JWT_SECRET` is required — generate one with
+
+```bash
+node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
+```
+
+The API refuses to boot without it rather than falling back to a shared default.
+Open the web app and create an account; every job, run, and profile belongs to it.
+
 ### Everything else
 
 ```bash
@@ -129,6 +145,245 @@ pnpm build                             # build every package
 pnpm lint / typecheck / test           # run across the workspace
 pnpm --filter job-agent migration:run  # real migrations (set DB_SYNC=false in prod)
 ```
+
+## Authentication
+
+Every HTTP route except `GET /` (the health check) and the `/auth` entry points
+requires `Authorization: Bearer <accessToken>`.
+
+| Route                   | Auth   | Notes                                       |
+| ----------------------- | ------ | ------------------------------------------- |
+| `POST /auth/register`   | public | creates the user, their profile, and tokens |
+| `POST /auth/login`      | public |                                             |
+| `POST /auth/refresh`    | public | body carries the refresh token              |
+| `POST /auth/logout`     | public | revokes the refresh token, idempotent       |
+| `GET /auth/me`          | bearer |                                             |
+| `GET /jobs`, `/runs`, … | bearer | scoped to the caller's profile              |
+
+### Tokens
+
+- **Access** — a 15-minute JWT carrying `sub`, `email`, and `pid` (profile id), so
+  the common path needs no extra profile lookup. Stateless.
+- **Refresh** — a 30-day JWT whose SHA-256 is stored in `refresh_tokens`. That
+  table is what makes a session revocable; the JWT alone could not be withdrawn.
+
+Both are signed with `JWT_SECRET` and tagged `typ`, so a refresh token can never
+be used as a bearer token. The web app keeps them in `sessionStorage`: closing the
+tab signs you out, and a reload is seamless because the refresh token survives it.
+
+### Rotation and reuse
+
+Refreshing issues a new pair and revokes the token that was presented. Presenting
+an already-consumed token is treated as theft and revokes **every** session for
+that user, which is the trade-off recommended by the OAuth security BCP: a
+genuine double refresh signs the user out, but a stolen token cannot outlive its
+detection. Tokens are per-tab, so the double refresh case does not arise in this
+app. A fresh login is always available, so this is not a lockout.
+
+### Passwords
+
+`node:crypto` scrypt at N=16384, r=8, p=1, stored as
+`scrypt$N$r$p$salt$hash` so the cost parameters can be raised later without
+invalidating existing rows. No native dependency. Login answers the same error for
+an unknown email and a wrong password, so the endpoint cannot be used to enumerate
+accounts.
+
+### Notes for contributors
+
+- The guard is applied per controller with `@UseGuards(JwtAuthGuard)`, **not**
+  registered globally: `JobPipelineController` is also a provider in the Kafka
+  microservice context, where a global guard would run with no request and no
+  header, failing every scoring event.
+- `JobsService.getById(id)` is for the Kafka pipeline, which legitimately has no
+  user. Anything reachable from HTTP must use `getOwnedById(id, profileId)`, which
+  filters `id` + `profileId` so a foreign id is a 404 rather than a read.
+- On sign-out the web app clears the TanStack Query cache, so the next person to
+  sign in on that tab never renders the previous user's jobs.
+
+## Semantic search (RAG service)
+
+`apps/rag-service` is a separate NestJS process that turns job postings and
+uploaded documents into vectors, and answers "which jobs fit this candidate?"
+by meaning rather than keyword overlap.
+
+```
+  documents.changed ─┐
+  jobs.index        ─┴─▶ ┌──────────────────────────────────────┐
+                      │  rag-service                          │
+  POST /internal/  ────▶│    object store (S3 | local disk)    │
+    search              │      │ download                        │
+                       │    extractor (pdf | docx | text)        │
+                       │      │                                  │
+                       │    chunker (900 chars, 150 overlap)    │
+                       │      │                                  │
+                       │    embeddings (Gemini, or offline)  │
+                       │      │                               │
+                       │      │                                  │
+                       │    vector store (Pinecone | memory)    │
+                       └──────────────────────────────────────┘
+```
+
+### Why it is a separate process
+
+PDF extraction and batched embedding are slow and memory-hungry. A restart or
+an OOM on the retrieval path should not take the job pipeline down with it, and
+the two scale on different axes: indexing is bursty and parallel, search is
+short and latency-sensitive. It runs under its own pm2 process (`rag-service`)
+with a higher memory limit.
+
+One process serves both transports — HTTP for the synchronous search call, Kafka
+for the indexing events — so a search is answerable while indexing continues.
+
+### Retrieval, and why it is built this way
+
+- **Job and document vectors share one namespace and one model.** Comparing them
+  is the entire point, and two embedding spaces are not comparable. The namespace
+  is `user-${profileId}`, so a missing filter is a hard failure to leak rather
+  than a silent cross-user read.
+- **Documents are chunked, not embedded whole.** A resume mixes many roles, so
+  one vector for the whole file matches everything weakly. Chunking at ~900
+  characters with 150 of overlap keeps a requirement like "5+ years of
+  Kubernetes" intact across a split.
+- **Search is multi-query with Reciprocal Rank Fusion.** One query per wanted
+  role focuses each embedding, and RRF merges the ranked lists by _position_
+  rather than by score, because cosine scores from different queries are not on
+  a common scale.
+- **Fusion is keyed by `jobId`.** Each query returns a different object for the
+  same posting, so fusing on object identity returns duplicates instead of a
+  merged ranking. `reciprocalRankFusion` therefore takes an explicit `keyOf`.
+- **Only the head of each ranked list counts as evidence.** A vector store always
+  returns k neighbours, so every query "retrieves" every job in its tail; letting
+  the tail vote would make `matchedBy` and the averaged similarity meaningless.
+- **`score` is the best similarity, not the fused rank.** RRF scores are
+  `1/(60+rank)` and are nearly flat, so reporting them as match strength would
+  show ~0.98 for a job that barely matched.
+- **Re-indexing replaces vectors in place.** Ids are deterministic
+  (`document:<id>:<chunk>`), so a repeat is an overwrite; the chunks the new
+  generation did not produce are deleted _after_ the upsert, which keeps the
+  previous version searchable if extraction fails halfway.
+
+### Adapters, and the degraded path
+
+Every external dependency is a port with a real adapter and a local one:
+
+| Port       | Production                             | Local fallback                  | Selected by          |
+| ---------- | -------------------------------------- | ------------------------------- | -------------------- |
+| Embeddings | Gemini (`gemini-embedding-001`, 1536d) | `offline` (deterministic, 384d) | `EMBEDDING_PROVIDER` |
+| Vectors    | Pinecone                               | `memory` (per-process)          | `VECTOR_STORE`       |
+| Objects    | S3                                     | `local` (filesystem)            | `OBJECT_STORE`       |
+
+The fallbacks exist so the whole flow runs and is testable with zero credentials
+and no network — the same ports, the same ranking maths. They are **not** good
+retrieval models: `offline` is a hashed bag of words, so it matches literally and
+has no notion of synonymy.
+
+The service therefore logs `DEGRADED` on boot and returns `degraded: true` in
+every search response and on `GET /health`, so a lexical-only result set is never
+mistaken for a real semantic one.
+
+**The Pinecone index dimension is fixed at creation and must equal the embedding
+model's output** (1536 for `gemini-embedding-001`, 384 for `offline`). A mismatch is checked at boot and fails loudly, because
+otherwise it shows up as a mysteriously empty index rather than an error.
+
+### Security
+
+`/internal/*` is service-to-service, not browser-facing, but it is not left open:
+anything able to reach the port could otherwise enumerate a user's documents or
+read back their extracted resume text. Each request carries
+`x-internal-token`, an HMAC-SHA256 of `METHOD:/path` keyed by
+`RAG_INTERNAL_SECRET`, compared in constant time. Signing the path means a token
+minted for one route cannot be replayed against another. The service refuses to
+boot if the secret is missing or under 32 characters.
+
+`GET /health` is intentionally unauthenticated and dependency-probing: a static
+`200` would report healthy while every request failed.
+
+### Migrations
+
+The RAG service owns `rag_documents` and its own migrations
+(`pnpm --filter rag-service migration:run`). It deliberately does **not** share
+tables with the job agent even though both use `task_app`: two services sharing
+table ownership means one process's `migration:revert` drops the other's data.
+
+The job agent adds three tables, all under `pnpm --filter job-agent migration:run`:
+`documents` (the upload catalog, with a partial unique index keeping one primary
+resume per profile), the `semantic*` columns on `jobs`, and `outbox_events`.
+
+### The upload and retrieval flow
+
+The RAG service is called by the job agent over `/internal/*`; nothing in the
+browser ever talks to it, so its HMAC secret and bucket credentials stay
+server-side.
+
+```
+browser ──POST /documents──▶ job agent ──presign──▶ RAG service
+                                                            │
+                              ┌─────────────────────────────┴──────┐
+                    S3 mode                                  local mode
+                              │                                    │
+        browser ──PUT bytes──▶ bucket              browser ──PUT /documents/:id/content──▶ job agent
+                                                            │  (raw bytes, max 10 MB)     │
+                                                            └────────relay (HMAC)────────▶ RAG service
+                                                                                             │
+   RAG service: extract ─▶ chunk ─▶ embed ─▶ upsert vectors ─▶ documents.indexed ──────────┘
+                                                                                             ▼
+                                                            job agent: documents.status = ready | failed
+   job agent: jobs.raw ─▶ insert job + outbox(events) ─▶ relay ─▶ jobs.index ─▶ RAG
+                                                        └──────▶ jobs.new ─▶ LLM score
+   run ends ─▶ rankRunSemantically ─▶ POST /internal/search { documentIds, queryText, roleQueries, runId }
+              ─▶ writes semanticScore / semanticSnippet / semanticRank on each job
+```
+
+**Two upload modes, one status path.** In S3 mode the browser PUTs the bytes
+straight to the bucket with a presigned URL and then calls
+`POST /documents/:id/complete`, which is the signal to start indexing. With no
+bucket configured, the browser sends the bytes to the API, which relays them to
+the RAG service over HMAC; there indexing happens inline because the caller is
+watching. Either way the outcome arrives on `documents.indexed`, so the catalog's
+status does not depend on which mode was used.
+
+**Documents are a query source, not just an upload.** A search sends
+`documentIds` rather than document text: the extracted text was stored next to
+the vectors at index time, and re-parsing a PDF on the latency-sensitive search
+path would be absurd. Queries are fused — the user's documents first, then the
+profile's plain-text resume and skills, then the roles they are targeting — and
+RRF merges the ranked lists by `jobId`.
+
+**`semanticScore` is not `matchScore`.** The LLM's 0–100 verdict and the vector
+similarity are stored in separate columns and never blended. They disagree often
+and informatively: a high vector score with a low LLM score is usually a keyword
+match in a job the user would not want. A single averaged number would destroy
+exactly the information the user needs. The UI shows them as distinct badges, and
+`semanticScore` is rendered as a percentage of similarity rather than on the
+LLM's 0–100 scale.
+
+**Ranking is best effort and idempotent.** At the end of a run the workflow waits
+for the run's postings to stop arriving, then searches; if the vector store is
+still catching up it retries a couple of times rather than reporting "no matches"
+for a run that had some. Anything still unscored is counted in `skipped` and
+filled in by a later run, or by the per-run **Re-rank** button in the UI.
+
+### Reliability: events are written with the row they describe
+
+`jobs.raw` inserts a job row and then needs to publish two events for it. Doing
+both inline left a window where the row existed but a publish had failed — the
+consumer had been told the message was handled, so nothing would ever score or
+index that job, and it would sit in the list with a null score forever.
+
+So the insert and the two `outbox_events` rows commit in one transaction, and a
+relay in the API process publishes them within half a second, marking each row
+sent only after the broker accepts it. A failed publish stays unpublished and is
+retried on the next pass. Delivery is at-least-once, which both consumers already
+tolerate: the RAG service upserts by `jobId`, and the scoring handler returns
+early on a job that already has a score.
+
+### Still to come
+
+Nothing on the upload → index → rank → display path. Not yet done, in rough
+priority order: true cloud verification (Gemini/Pinecone/S3 have never been run
+against live credentials, only their fallbacks), a proper
+`documents.indexed` backfill for documents indexed before this table existed,
+and pagination on the jobs list.
 
 ## CI/CD
 

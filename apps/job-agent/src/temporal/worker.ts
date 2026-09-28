@@ -10,6 +10,7 @@ import { SourcesRegistry } from '../jobs/sources/sources.registry.js';
 import { brokersFrom, ensureKafkaTopics } from '../kafka/kafka.config.js';
 import { KafkaProducerService } from '../kafka/kafka-producer.service.js';
 import { ProfileService } from '../profile/profile.service.js';
+import { SemanticMatchService } from '../semantic/semantic-match.service.js';
 import { createActivities } from './activities.js';
 import { TemporalClientService } from './temporal-client.service.js';
 
@@ -38,6 +39,7 @@ async function run() {
       jobs: app.get(JobsService),
       sources: app.get(SourcesRegistry),
       producer: app.get(KafkaProducerService),
+      semantic: app.get(SemanticMatchService),
     }),
   });
 

@@ -54,6 +54,10 @@ lerna-debug.log*
 .temp
 .tmp
 
+# Local object store for the RAG service (see LOCAL_STORAGE_DIR in .env.example).
+# User-uploaded documents land here when no S3 bucket is configured.
+.local-storage/
+
 # Runtime data
 pids
 *.pid

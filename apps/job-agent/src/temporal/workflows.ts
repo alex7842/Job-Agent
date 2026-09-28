@@ -18,6 +18,17 @@ const fetcher = proxyActivities<JobActivities>({
   },
 });
 
+/**
+ * Semantic ranking waits for the Kafka pipeline to drain and then calls the RAG
+ * service, so it needs a longer timeout than the quick database activities and
+ * only one retry: repeating it would re-run a search whose answer was merely
+ * late to arrive.
+ */
+const ranker = proxyActivities<JobActivities>({
+  startToCloseTimeout: '3 minutes',
+  retry: { maximumAttempts: 1 },
+});
+
 export interface DailyJobSearchInput {
   profileId?: string; // omitted (scheduled run) -> all active profiles
 }
@@ -25,8 +36,9 @@ export interface DailyJobSearchInput {
 /**
  * Daily flow:
  *   for each profile -> fetch every enabled source in parallel -> each activity publishes raw jobs to Kafka.
- * Dedupe + AI scoring happen downstream in the Kafka consumers, so the workflow stays small and
- * never carries job payloads in its history.
+ *   Dedupe + AI scoring happen downstream in the Kafka consumers, so the workflow stays small and
+ *   never carries job payloads in its history. Once the pipeline has settled, the run's postings are
+ *   ranked against the profile's documents for semantic scoring.
  */
 export async function dailyJobSearchWorkflow(input: DailyJobSearchInput = {}): Promise<void> {
   const profileIds = input.profileId ? [input.profileId] : await quick.listActiveProfileIds();
@@ -53,5 +65,10 @@ export async function dailyJobSearchWorkflow(input: DailyJobSearchInput = {}): P
     });
 
     await quick.finishRun(runId, stats);
+
+    // The postings are already stored and scored by this point, so the run is
+    // complete whether or not semantic ranking works. A disabled or unreachable
+    // RAG service is not a run failure.
+    await ranker.rankRunSemantically({ runId, profileId }).catch(() => undefined);
   }
 }

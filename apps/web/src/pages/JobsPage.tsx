@@ -3,11 +3,12 @@ import { Link, useSearchParams } from 'react-router';
 import { JOB_STATUSES, JOB_SOURCES, type JobStatus } from '@job-agent/shared';
 import { useJobs } from '@/lib/queries';
 import { formatDate, formatRelative } from '@/lib/format';
-import { MetaPill, ScoreBadge, StatusBadge } from '@/components/badges';
+import { MetaPill, ScoreBadge, SemanticBadge, StatusBadge } from '@/components/badges';
 import { EmptyState, ErrorNote, Spinner, cx } from '@/components/ui';
 
 const SORTS = [
   { value: 'score', label: 'Best match' },
+  { value: 'semantic', label: 'Closest to resume' },
   { value: 'date', label: 'Newest' },
 ] as const;
 
@@ -22,7 +23,7 @@ export function JobsPage() {
       status: (search.get('status') as JobStatus | null) ?? undefined,
       source: search.get('source') || undefined,
       minScore: search.get('minScore') ? Number(search.get('minScore')) : undefined,
-      sort: (search.get('sort') as 'score' | 'date' | null) ?? ('score' as const),
+      sort: (search.get('sort') as 'score' | 'semantic' | 'date' | null) ?? ('score' as const),
       page: Number(search.get('page') ?? 1),
       limit: 20,
     }),
@@ -143,6 +144,11 @@ export function JobsPage() {
                   <div className="flex shrink-0 items-center gap-2">
                     <StatusBadge status={job.status} />
                     <ScoreBadge score={job.matchScore} pending />
+                    <SemanticBadge
+                      score={job.semanticScore}
+                      rank={job.semanticRank}
+                      pending={params.sort === 'semantic'}
+                    />
                   </div>
                 </div>
 
@@ -158,6 +164,21 @@ export function JobsPage() {
 
                 {job.matchReason ? (
                   <p className="mt-2 line-clamp-2 text-xs text-neutral-400">{job.matchReason}</p>
+                ) : null}
+
+                {/* A failed score is otherwise invisible: the badge says
+                    "unscored" and nothing says why. Open the job to retry it. */}
+                {job.scoreError ? (
+                  <p className="mt-1.5 line-clamp-2 text-xs text-amber-600/90">
+                    scoring failed: {job.scoreError}
+                  </p>
+                ) : null}
+
+                {/* The passage that matched, so the number above is not a black box. */}
+                {job.semanticSnippet ? (
+                  <p className="mt-1.5 line-clamp-2 border-l-2 border-neutral-800 pl-2 text-xs text-neutral-500">
+                    {job.semanticSnippet}
+                  </p>
                 ) : null}
               </Link>
             </li>

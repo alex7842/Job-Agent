@@ -1,4 +1,10 @@
-import { useProfile, useRuns, useTriggerRun } from '@/lib/queries';
+import {
+  useProfile,
+  useRankRunSemantically,
+  useRuns,
+  useSemanticStatus,
+  useTriggerRun,
+} from '@/lib/queries';
 import { formatDateTime, runStatusClass } from '@/lib/format';
 import { Badge, EmptyState, ErrorNote, Spinner } from '@/components/ui';
 
@@ -6,6 +12,8 @@ export function RunsPage() {
   const { data: runs, isPending, isError, error } = useRuns();
   const { data: profile } = useProfile();
   const trigger = useTriggerRun();
+  const rank = useRankRunSemantically();
+  const { data: semantic } = useSemanticStatus();
 
   return (
     <div className="space-y-4">
@@ -27,6 +35,7 @@ export function RunsPage() {
       </div>
 
       {trigger.isError ? <ErrorNote error={trigger.error} /> : null}
+      {rank.isError ? <ErrorNote error={rank.error} /> : null}
       {trigger.isSuccess ? (
         <p className="text-xs text-emerald-400">
           Workflow started ({trigger.data.workflowId}). New jobs appear in the list as the pipeline
@@ -53,7 +62,20 @@ export function RunsPage() {
                     {run.finishedAt ? ` · finished ${formatDateTime(run.finishedAt)}` : ''}
                   </p>
                 </div>
-                <Badge className={runStatusClass(run.status)}>{run.status}</Badge>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Badge className={runStatusClass(run.status)}>{run.status}</Badge>
+                  {/* Manual retry for the automatic ranking that runs at the end
+                      of a run: needed when the postings finished indexing after
+                      the workflow had already given up waiting for them. */}
+                  <button
+                    disabled={rank.isPending || semantic?.enabled === false}
+                    onClick={() => rank.mutate(run.id)}
+                    title="Compare this run's postings against your documents"
+                    className="rounded-md border border-neutral-800 px-2 py-1 text-xs text-neutral-400 transition hover:border-neutral-700 hover:text-neutral-200 disabled:opacity-40"
+                  >
+                    {rank.isPending && rank.variables === run.id ? 'Ranking…' : 'Re-rank'}
+                  </button>
+                </div>
               </div>
 
               {Object.keys(run.stats).length > 0 ? (

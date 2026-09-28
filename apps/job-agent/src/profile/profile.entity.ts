@@ -20,6 +20,13 @@ export class Profile {
 
   @Column({ type: 'boolean', default: true }) isActive: boolean;
 
+  /**
+   * Owning login. Nullable so pre-auth rows created by `DB_SYNC` in dev keep
+   * working; the unique index is in the AddAuth migration, not on the entity,
+   * so the HTTP layer stays the single writer of this column.
+   */
+  @Column({ type: 'uuid', nullable: true }) userId: string | null;
+
   @CreateDateColumn() createdAt: Date;
   @UpdateDateColumn() updatedAt: Date;
 }

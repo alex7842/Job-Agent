@@ -9,11 +9,14 @@ import { Profile } from './profile.entity.js';
 export class ProfileService {
   constructor(@InjectRepository(Profile) private readonly repo: Repository<Profile>) {}
 
-  /** Single-user for now: first profile, created on demand. */
-  async getOrCreate(): Promise<Profile> {
-    const existing = await this.repo.find({ order: { createdAt: 'ASC' }, take: 1 });
-    if (existing[0]) return existing[0];
-    return this.repo.save(this.repo.create({ preferences: { ...DEFAULT_PREFERENCES } }));
+  /**
+   * The caller's profile, created on first use. Every jobs/runs query keys off
+   * this id, so this is the isolation boundary — no global "first profile".
+   */
+  async forUser(userId: string): Promise<Profile> {
+    const existing = await this.repo.findOneBy({ userId });
+    if (existing) return existing;
+    return this.repo.save(this.repo.create({ userId, preferences: { ...DEFAULT_PREFERENCES } }));
   }
 
   async getById(id: string): Promise<Profile> {
@@ -26,8 +29,9 @@ export class ProfileService {
     return this.repo.findBy({ isActive: true });
   }
 
-  async update(dto: UpdateProfileDto): Promise<Profile> {
-    const p = await this.getOrCreate();
+  /** Merges preferences rather than replacing them, so partial updates are additive. */
+  async update(profileId: string, dto: UpdateProfileDto): Promise<Profile> {
+    const p = await this.getById(profileId);
     const { preferences, ...rest } = dto;
     Object.assign(p, rest);
     if (preferences) {

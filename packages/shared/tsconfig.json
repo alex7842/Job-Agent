@@ -4,6 +4,10 @@
     "moduleResolution": "nodenext",
     "target": "ES2023",
     "lib": ["ES2023"],
+    // Explicit: the package has no DOM lib, and internal-auth.ts needs node's
+    // crypto. Left implicit, pnpm's isolated node_modules left the globals
+    // unresolved and the build failed on a file the browser bundle never loads.
+    "types": ["node"],
     "strict": true,
     "declaration": true,
     "declarationMap": true,

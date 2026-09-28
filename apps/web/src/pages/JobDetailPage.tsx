@@ -2,7 +2,7 @@ import { Link, useParams } from 'react-router';
 import { type JobStatus } from '@job-agent/shared';
 import { useJob, useRescoreJob, useSetJobStatus } from '@/lib/queries';
 import { formatDateTime } from '@/lib/format';
-import { MetaPill, ScoreBadge, StatusBadge } from '@/components/badges';
+import { MetaPill, ScoreBadge, SemanticBadge, StatusBadge } from '@/components/badges';
 import { ErrorNote, Spinner, cx } from '@/components/ui';
 
 const REVIEW_ACTIONS: { status: JobStatus; label: string; active: string }[] = [
@@ -99,6 +99,39 @@ export function JobDetailPage() {
           {rescore.isPending ? 'Queued…' : 'Rescore'}
         </button>
       </div>
+
+      {/* ---------- semantic match ---------- */}
+      <section className="rounded-xl border border-neutral-800 p-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold tracking-wide text-neutral-400 uppercase">
+            Semantic match
+          </h2>
+          <SemanticBadge score={job.semanticScore} rank={job.semanticRank} />
+        </div>
+
+        {job.semanticSnippet ? (
+          <div className="space-y-2">
+            {/* The passage that matched, so the percentage is evidence rather than
+                a verdict. The label says which corpus it came from, because the
+                snippet can be either the posting or the resume. */}
+            <p className="text-xs text-neutral-500">
+              {/* The corpus is postings, so the passage is always the job's own
+                  text: what this snippet shows is which part of the posting
+                  matched the resume or target roles it was compared against. */}
+              Passage from this posting that matched your documents
+              {job.semanticAt ? ` · ranked ${formatDateTime(job.semanticAt)}` : ''}
+            </p>
+            <p className="border-l-2 border-indigo-500/40 pl-3 text-sm leading-relaxed text-neutral-300">
+              {job.semanticSnippet}
+            </p>
+          </div>
+        ) : (
+          <p className="text-sm text-neutral-600">
+            No semantic score yet. It appears once a run has indexed this posting and compared it to
+            your uploaded documents.
+          </p>
+        )}
+      </section>
 
       {/* ---------- AI verdict ---------- */}
       <section className="rounded-xl border border-neutral-800 p-4">
