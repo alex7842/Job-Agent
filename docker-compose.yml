@@ -1,14 +1,37 @@
-# Local infra for the job-search pipeline.
-# Postgres + Temporal already run on this machine (pk-* containers), so this
-# file only defines the Kafka broker that was missing.
+# Local infrastructure for the whole monorepo.
 #
-#   docker compose up -d
+#   pnpm infra:up       # Postgres + Kafka + Temporal + Temporal UI (fresh machine)
+#   pnpm infra:up:db    # only the database — use this when Kafka (9092) and
+#                       # Temporal (7233) are already running elsewhere, otherwise
+#                       # the fixed ports below will fail to bind.
+#   pnpm infra:down
 #
-# Match the defaults in .env (KAFKA_BROKERS=localhost:9092).
+# Port note: 5432 is often already taken on a dev machine, so the app database is
+# published on 5433 to match DB_PORT in the root .env. Temporal keeps a Postgres of
+# its own on the internal network only (never published to the host).
+name: job-agent
+
 services:
+  postgres:
+    image: postgres:16
+    container_name: jb-postgres
+    ports:
+      - '5433:5432'
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: task_app
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d task_app']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   kafka:
     image: apache/kafka:latest
-    container_name: pk-kafka
+    container_name: jb-kafka
     ports:
       - '9092:9092'
     environment:
@@ -25,3 +48,49 @@ services:
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_NUM_PARTITIONS: 3
       CLUSTER_ID: 5L6g3nShT-eMCtK--X86sw
+
+  temporal-postgres:
+    image: postgres:16
+    container_name: jb-temporal-postgres
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_DB: temporal
+    volumes:
+      - temporal-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U temporal']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  temporal:
+    image: temporalio/auto-setup:latest
+    container_name: jb-temporal
+    depends_on:
+      temporal-postgres:
+        condition: service_healthy
+    ports:
+      - '7233:7233'
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEEDS=temporal-postgres
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+      - VISIBILITY_DBNAME=temporal_visibility
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    container_name: jb-temporal-ui
+    depends_on:
+      - temporal
+    ports:
+      - '8233:8080'
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+
+volumes:
+  postgres-data:
+  temporal-postgres-data:

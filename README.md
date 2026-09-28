@@ -1,114 +1,150 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# job-agent
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+A monorepo for a job-search agent: it crawls job boards on a schedule, filters and
+dedupes what it finds, and has an LLM score every posting against your resume.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+One deployable backend, one web app, one shared contract package, orchestrated with
+Turborepo and pnpm workspaces.
 
-## Description
-
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
-
-```bash
-$ npm install
+```
+job-agent/
+├── apps/
+│   ├── job-agent/        NestJS API + Kafka consumers + Temporal worker
+│   └── web/              Vite + React + Tailwind dashboard
+├── packages/
+│   └── shared/           types, event contracts, API schemas (@job-agent/shared)
+├── docker-compose.yml    Postgres, Kafka, Temporal, Temporal UI
+├── turbo.json            task graph + caching
+└── .env                  single env file, shared by every app
 ```
 
-## Compile and run the project
+## The pipeline
 
-```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+```
+                    ┌──────────────────────────────────────────────┐
+  cron (10:00 IST)  │  Temporal worker  (apps/job-agent, dev:worker) │
+        or           │  dailyJobSearchWorkflow                       │
+  POST /runs  ──────▶│    for each profile:                           │
+                    │      startRun      → search_runs row           │
+                    │      fetchAndPublish × N sources (parallel)    │
+                    └───────────────────┬──────────────────────────┘
+                                        │ RawJobEvent per posting
+                                        ▼
+                                 ╔════════════╗
+                                 ║  jobs.raw  ║
+                                 ╚═════╤══════╝
+                    ┌──────────────────┴──────────────────┐
+                    │  API process  (apps/job-agent,      │
+                    │  hybrid microservice, group         │
+                    │  job-pipeline-server)                │
+                    │                                     │
+                    │  isFresh(postedWithinDays)           │
+                    │  hardFilter(excluded*, remoteOnly)   │
+                    │  insertIfNew(dedupeHash, OR IGNORE) │
+                    └──────────────────┬──────────────────┘
+                        new rows only   ▼
+                                 ╔════════════╗
+                                 ║  jobs.new  ║
+                                 ╚═════╤══════╝
+                    ┌──────────────────┴──────────────────┐
+                    │  ScorerService → Anthropic         │
+                    │  saveScore (score, reason,          │
+                    │  highlights, redFlags)              │
+                    └──────────────────┬──────────────────┘
+                                       ▼
+                                 ╔═════════════╗        ┌──────────┐
+                                 ║ jobs.scored ║        │   web    │
+                                 ╚═════════════╝        │ dashboard│
+                                       │                └──────────┘
+                          any failure  ▼
+                                 ╔════════════╗
+                                 ║  jobs.dlq  ║
+                                 ╚════════════╝
 ```
 
-## Run tests
+### Why it is split this way
+
+**Two processes, one codebase.** `dev:api` serves HTTP _and_ runs the Kafka
+consumers (`src/main.ts` calls `connectMicroservice`). `dev:worker` is a separate
+Nest application context that only polls the Temporal task queue. Same code, same
+database — but LLM scoring never competes with workflow polling for the event loop,
+and either side can be restarted without killing the other.
+
+**Temporal owns the schedule and the fan-out.** `dailyJobSearchWorkflow` resolves
+profiles, records a `search_runs` row, then calls `fetchAndPublish` once per source
+in parallel with `Promise.allSettled`, so one dead job board never fails the run.
+Per-source retries use exponential backoff. The workflow returns only a _count_ per
+source, which keeps job payloads out of Temporal history.
+
+**Kafka owns the fan-in.** Activities publish raw postings to `jobs.raw`; the API
+process consumes them, applies cheap filters, and emits `jobs.new` only for rows that
+actually made it into the database. A second consumer scores those and emits
+`jobs.scored`. Every stage catches its own errors and routes them to `jobs.dlq`, so a
+poison message can never block a partition. Re-delivery is safe: `jobs.raw` is
+idempotent through the `(profileId, dedupeHash)` unique constraint, and `jobs.new`
+skips any job that already has a `scoredAt`.
+
+**Nothing consumes `jobs.scored` or `jobs.dlq` yet.** That is the intended hook for
+notifications or a websocket feed.
+
+### Key paths in `apps/job-agent`
+
+| Concern                      | File                                                |
+| ---------------------------- | --------------------------------------------------- |
+| HTTP bootstrap + consumers   | `src/main.ts`                                       |
+| Workflow (deterministic)     | `src/temporal/workflows.ts`                         |
+| Activities (real I/O)        | `src/temporal/activities.ts`                        |
+| Worker process               | `src/temporal/worker.ts`                            |
+| Schedule + manual runs       | `src/temporal/temporal-client.service.ts`           |
+| Stage 1 + 2 consumers        | `src/jobs/pipeline/job-pipeline.controller.ts`      |
+| Filters + dedupe hash        | `src/jobs/pipeline/filters.ts`                      |
+| LLM scoring prompt           | `src/jobs/pipeline/scorer.service.ts`               |
+| Job platforms (add one here) | `src/jobs/sources/` + `sources.registry.ts`         |
+| REST endpoints               | `src/jobs/jobs.controller.ts`, `runs.controller.ts` |
+
+## Getting started
+
+Requires Node 22+, pnpm 11+, and Docker.
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+pnpm install
+cp .env.example .env          # then fill in ANTHROPIC_API_KEY and any source keys
+pnpm infra:up                 # Postgres + Kafka + Temporal + Temporal UI
+pnpm dev                      # API :3000, worker, and the web app
 ```
 
-## Deployment
+`pnpm dev` runs three watch processes at once through Turborepo. If Kafka (9092) or
+Temporal (7233) are already running on your machine, start only the database with
+`pnpm infra:up:db` — the compose file binds fixed ports and will fail otherwise.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+The Vite dev server prints its port; it defaults to 5173 but steps up if that is
+taken. All API traffic goes to `/api`, which Vite proxies to `PORT` in dev and a
+reverse proxy handles in production.
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+### Everything else
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+pnpm dev:api | dev:worker | dev:web    # run one process on its own
+pnpm build                             # build every package
+pnpm lint / typecheck / test           # run across the workspace
+pnpm --filter job-agent migration:run  # real migrations (set DB_SYNC=false in prod)
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+## Adding a job source
 
-## Observability
+1. Implement `JobSource` in `apps/job-agent/src/jobs/sources/` — `name`,
+   `isEnabled(profile)`, `fetch(profile)`, returning `RawJob[]`.
+2. Add it to the `SourcesRegistry` constructor and array, and to `JobsModule`
+   providers.
+3. Add the name to `JOB_SOURCES` in `packages/shared/src/domain.ts` so the
+   dashboard's source filter offers it.
 
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
+Return `isEnabled = false` when credentials are missing and the workflow skips it
+silently — that is how the app runs with no API keys at all.
 
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
+## Environment
 
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observer](https://observer.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+One `.env` at the repository root, read by every app
+(`apps/job-agent/src/env.ts` resolves it; Vite reads it for the dev proxy). Never
+prefix a secret with `VITE_` — anything so prefixed is inlined into the browser
+bundle. Full annotated list in `.env.example`.

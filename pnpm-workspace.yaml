@@ -1,0 +1,22 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# pnpm >= 10 blocks postinstall scripts unless they are allow-listed here.
+# esbuild / @tailwindcss/oxide / unrs-resolver ship platform binaries,
+# protobufjs generates its own loader, @swc/core builds its native fallback.
+allowBuilds:
+  '@swc/core': true
+  '@tailwindcss/oxide': true
+  esbuild: true
+  protobufjs: true
+  unrs-resolver: true
+
+minimumReleaseAgeExclude:
+  - '@turbo/darwin-64@2.11.5'
+  - '@turbo/darwin-arm64@2.11.5'
+  - '@turbo/linux-64@2.11.5'
+  - '@turbo/linux-arm64@2.11.5'
+  - '@turbo/windows-64@2.11.5'
+  - '@turbo/windows-arm64@2.11.5'
+  - turbo@2.11.5

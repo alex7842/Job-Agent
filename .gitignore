@@ -1,7 +1,11 @@
 # compiled output
-/dist
-/node_modules
-/build
+dist/
+build/
+.turbo/
+
+# dependencies
+node_modules/
+.pnpm-store/
 
 # TypeScript build cache
 *.tsbuildinfo
@@ -38,12 +42,13 @@ lerna-debug.log*
 !.vscode/launch.json
 !.vscode/extensions.json
 
-# dotenv environment variable files
+# dotenv environment variable files (the single root .env is shared by every app)
 .env
 .env.development.local
 .env.test.local
 .env.production.local
 .env.local
+!.env.example
 
 # temp directory
 .temp
