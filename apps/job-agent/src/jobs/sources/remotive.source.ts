@@ -1,8 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { RawJob } from '@job-agent/shared';
 import { Profile } from '../../profile/profile.entity.js';
 import { stripHtml } from '../pipeline/filters.js';
-import { getJson, JobSource } from './job-source.interface.js';
+import { broadenings, getJson, JobSource } from './job-source.interface.js';
 
 interface RemotiveResponse {
   jobs?: {
@@ -21,15 +21,26 @@ interface RemotiveResponse {
 @Injectable()
 export class RemotiveSource implements JobSource {
   readonly name = 'remotive';
+  private readonly log = new Logger(RemotiveSource.name);
   isEnabled = () => true;
 
   async fetch(profile: Profile): Promise<RawJob[]> {
     const out: RawJob[] = [];
     for (const role of profile.preferences.roles.slice(0, 4)) {
-      const res = await getJson<RemotiveResponse>(
-        `https://remotive.com/api/remote-jobs?${new URLSearchParams({ search: role, limit: '50' })}`,
-      );
-      for (const j of res.jobs ?? []) {
+      // Remotive only lists remote roles, so a board with few intern or
+      // niche-title postings comes back empty for a literal resume title. Same
+      // widening as the other sources, minus the location step it does not have.
+      let jobs: RemotiveResponse['jobs'] = [];
+      for (const form of broadenings(role)) {
+        const res = await getJson<RemotiveResponse>(
+          `https://remotive.com/api/remote-jobs?${new URLSearchParams({ search: form.role, limit: '50' })}`,
+        );
+        jobs = res.jobs ?? [];
+        this.log.log(`query search="${form.role}" -> ${jobs.length} returned`);
+        if (jobs.length > 0) break;
+      }
+
+      for (const j of jobs) {
         out.push({
           externalId: String(j.id),
           title: j.title,

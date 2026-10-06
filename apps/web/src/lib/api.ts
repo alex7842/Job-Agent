@@ -1,14 +1,14 @@
 import type {
+  AdminOverview,
   AuthUser,
-  CreateDocumentResult,
-  DocumentKind,
-  DocumentRecord,
   JobDetail,
   JobListItem,
   JobStatus,
   Paginated,
   Profile,
   QueryJobs,
+  ResumeLink,
+  ResumeParseResult,
   SearchRun,
   SemanticRankResult,
   StartRunResult,
@@ -101,13 +101,29 @@ function refreshSession(): Promise<boolean> {
   return inFlight;
 }
 
+/**
+ * JSON is the default framing, but only for a body we serialized ourselves —
+ * those are strings. FormData and Blob have to go out with no content-type at
+ * all: the browser sets `multipart/form-data` together with the boundary it
+ * generated, and naming the type here replaces that with a value that has no
+ * boundary. The API's JSON parser then tries to parse the boundary itself and
+ * answers `Unexpected token '-', "------WebKitBoundary..." is not valid JSON`.
+ */
+function withDefaultHeaders(init: RequestInit): Headers {
+  const headers = new Headers(init.headers);
+  if (!headers.has('content-type') && typeof init.body === 'string') {
+    headers.set('content-type', 'application/json');
+  }
+  return headers;
+}
+
 /** Raw fetch with no auth handling; used by refresh and the auth endpoints. */
 async function send<T>(path: string, init: RequestInit): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${BASE}${path}`, {
       ...init,
-      headers: { 'content-type': 'application/json', ...init.headers },
+      headers: withDefaultHeaders(init),
     });
   } catch {
     throw new ApiError(0, 'Cannot reach the API. Is `pnpm dev:api` running?');
@@ -130,11 +146,8 @@ async function send<T>(path: string, init: RequestInit): Promise<T> {
 
 async function request<T>(path: string, init: RequestInit = {}, attempt = 0): Promise<T> {
   const access = tokens.access();
-  const headers: Record<string, string> = {
-    'content-type': 'application/json',
-    ...(init.headers as Record<string, string> | undefined),
-  };
-  if (access) headers.authorization = `Bearer ${access}`;
+  const headers = new Headers(init.headers);
+  if (access) headers.set('authorization', `Bearer ${access}`);
 
   try {
     return await send<T>(path, { ...init, headers });
@@ -168,26 +181,27 @@ function toQuery(params: Record<string, unknown>): string {
  *
  * `request` is reused rather than a new fetch so the access token and the
  * single-flight refresh still apply: an upload that outlives a 15-minute access
- * token would otherwise fail on a 401 and strand the file. content-type is set
- * explicitly because the default would claim application/json, which the API
- * would reject.
+ * token would otherwise fail on a 401 and strand the file. contentType is left
+ * undefined for FormData so the browser keeps its own multipart boundary; pass
+ * one only for a raw body whose type is known (application/pdf, text/plain).
  */
-async function requestBinary<T>(
+async function sendBinary<T>(
   path: string,
   body: BodyInit,
-  contentType: string,
+  contentType?: string,
   attempt = 0,
 ): Promise<T> {
   const access = tokens.access();
-  const headers: Record<string, string> = { 'content-type': contentType };
+  const headers: Record<string, string> = {};
+  if (contentType !== undefined) headers['content-type'] = contentType;
   if (access) headers.authorization = `Bearer ${access}`;
 
   try {
-    return await send<T>(path, { method: 'PUT', body, headers });
+    return await send<T>(path, { method: 'POST', body, headers });
   } catch (err) {
     const expired = err instanceof ApiError && err.status === 401;
     if (!expired || !access || attempt >= 1) throw err;
-    if (await refreshSession()) return requestBinary<T>(path, body, contentType, attempt + 1);
+    if (await refreshSession()) return sendBinary<T>(path, body, contentType, attempt + 1);
     tokens.clear();
     authFailure?.();
     throw err;
@@ -248,73 +262,22 @@ export const api = {
   updateProfile: (input: UpdateProfileInput) =>
     request<Profile>('/profile', { method: 'PUT', body: JSON.stringify(input) }),
 
-  // ---------- documents ----------
-  listDocuments: () => request<DocumentRecord[]>('/documents'),
-
-  /** Ask for an upload target, then actually deliver the bytes. */
-  uploadDocument: async (file: File, kind: DocumentKind, isPrimary: boolean) => {
-    const { document, mode, uploadUrl, uploadPath, maxBytes } = await request<CreateDocumentResult>(
-      '/documents',
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          fileName: file.name,
-          mimeType: file.type || 'text/plain',
-          sizeBytes: file.size,
-          kind,
-          isPrimary,
-        }),
-      },
-    );
-
-    // Checked before spending the user's bandwidth on a 4 MB file the API would
-    // refuse anyway.
-    if (file.size > maxBytes) {
-      await api.deleteDocument(document.id).catch(() => undefined);
-      throw new ApiError(
-        0,
-        `That file is too large. The limit is ${(maxBytes / 1048576).toFixed(0)} MB.`,
-      );
-    }
-
-    if (mode === 's3') {
-      if (!uploadUrl) throw new ApiError(0, 'The API did not return an upload URL.');
-      // Straight to the bucket: the bytes never touch this app's API. No
-      // credentials are attached and none are needed — the URL is the capability.
-      const res = await fetch(uploadUrl, {
-        method: 'PUT',
-        body: file,
-        headers: { 'content-type': file.type || 'application/octet-stream' },
-      });
-      if (!res.ok) {
-        throw new ApiError(res.status, `The upload was rejected by storage (${res.status}).`);
-      }
-      return api.completeDocument(document.id);
-    }
-
-    // Local mode: there is no bucket to PUT to, so the bytes go through the API,
-    // which relays them to the search service.
-    if (!uploadPath) throw new ApiError(0, 'The API did not return an upload path.');
-    return requestBinary<DocumentRecord>(
-      uploadPath,
-      await file.arrayBuffer(),
-      file.type || 'application/octet-stream',
-    );
+  // ---------- resume ----------
+  /**
+   * One call, because it is one step: the API relays the bytes to the document
+   * service, which stores the file and extracts its text, and the parser fills
+   * the profile in before the response goes out. Nothing to poll afterwards.
+   */
+  uploadResume: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return sendBinary<ResumeParseResult>('/profile/resume', form);
   },
 
-  completeDocument: (id: string) =>
-    request<DocumentRecord>(`/documents/${id}/complete`, { method: 'POST' }),
+  removeResume: () => request<Profile>('/profile/resume', { method: 'DELETE' }),
 
-  reindexDocument: (id: string) =>
-    request<{ status: string; indexed: number; errorMessage?: string }>(
-      `/documents/${id}/reindex`,
-      {
-        method: 'POST',
-      },
-    ),
-
-  deleteDocument: (id: string) =>
-    request<{ deleted: boolean }>(`/documents/${id}`, { method: 'DELETE' }),
+  /** Signed URL for the stored file. Fetched on click: it expires. */
+  resumeLink: () => request<ResumeLink>('/profile/resume/link'),
 
   // ---------- semantic ----------
   semanticStatus: () =>
@@ -329,4 +292,7 @@ export const api = {
 
   rankRunSemantically: (runId: string) =>
     request<SemanticRankResult>(`/runs/${runId}/semantic-rank`, { method: 'POST' }),
+
+  // ---------- admin ----------
+  adminOverview: () => request<AdminOverview>('/admin/overview'),
 };

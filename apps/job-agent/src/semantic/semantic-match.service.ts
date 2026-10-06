@@ -4,11 +4,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Repository } from 'typeorm';
 import {
   JobStatus,
+  MAX_QUERY_CHARS,
   type SearchHit,
   type SearchRequest,
   type SemanticRankResult,
 } from '@job-agent/shared';
-import { DocumentsService } from '../documents/documents.service.js';
 import { Job } from '../jobs/entities/job.entity.js';
 import { ProfileService } from '../profile/profile.service.js';
 import { RagClientService } from '../rag/rag-client.service.js';
@@ -44,7 +44,6 @@ export class SemanticMatchService {
   constructor(
     @InjectRepository(Job) private readonly jobs: Repository<Job>,
     private readonly rag: RagClientService,
-    private readonly documents: DocumentsService,
     private readonly profiles: ProfileService,
     private readonly config: ConfigService,
   ) {
@@ -55,7 +54,7 @@ export class SemanticMatchService {
   }
 
   /**
-   * Rank a run's postings against the user's documents.
+   * Rank a run's postings against the candidate's profile.
    *
    * Called at the end of a search run, once the postings are in the vector store.
    * Jobs with no score are only the ones that failed to index or rank, so this is
@@ -76,16 +75,19 @@ export class SemanticMatchService {
       this.log.warn(`Run ${runId}: postings were still arriving; ranking what is indexed so far`);
     }
 
-    const response = await this.searchWithRetry(
-      {
-        profileId,
-        userId: await this.userIdFor(profileId),
-        ...(await this.querySources(profileId)),
-        runId,
-        topK: this.topK,
-      },
-      () => this.jobs.count({ where: { runId, profileId } }),
-    );
+    const sources = await this.querySources(profileId);
+    const response = sources
+      ? await this.searchWithRetry(
+          {
+            profileId,
+            userId: await this.userIdFor(profileId),
+            ...sources,
+            runId,
+            topK: this.topK,
+          },
+          () => this.jobs.count({ where: { runId, profileId } }),
+        )
+      : null;
 
     if (!response) {
       const pending = await this.jobs.count({
@@ -120,14 +122,17 @@ export class SemanticMatchService {
       return { ranked: 0, skipped: 0, degraded: false, embeddingModel: null, vectorStore: null };
     }
 
-    const response = await this.rag.search({
-      profileId,
-      userId: await this.userIdFor(profileId),
-      ...(await this.querySources(profileId)),
-      // Not this.topK: the user asked for every job to be re-scored, and the
-      // default 20 would quietly leave the rest on their old scores.
-      topK: RANK_ALL_TOP_K,
-    });
+    const sources = await this.querySources(profileId);
+    const response = sources
+      ? await this.rag.search({
+          profileId,
+          userId: await this.userIdFor(profileId),
+          ...sources,
+          // Not this.topK: the user asked for every job to be re-scored, and the
+          // default 20 would quietly leave the rest on their old scores.
+          topK: RANK_ALL_TOP_K,
+        })
+      : null;
     if (!response) {
       const pending = await this.jobs.count({
         where: { profileId, semanticScore: IsNull() },
@@ -208,32 +213,42 @@ export class SemanticMatchService {
   }
 
   /**
-   * What to search with: the user's own documents if they have any, plus their
-   * plain-text resume and the roles they want.
+   * What to search with, taken entirely from the profile.
    *
-   * Documents are listed as ids rather than as text because the RAG service
-   * already extracted and stored their text at index time; sending it back over
-   * the wire on every search would mean a second copy that can drift.
+   * The resume text is the candidate's own statement of what they have done, and
+   * the wanted roles are what they are looking for; one query per role keeps each
+   * one focused, because a single query built from a whole resume is an average
+   * vector that matches everything weakly.
+   *
+   * Null when the profile has nothing to search with: the RAG service requires at
+   * least one source and answers 400 otherwise, which would otherwise be
+   * indistinguishable from the service being unavailable.
    */
   private async querySources(
     profileId: string,
-  ): Promise<{ documentIds: string[]; queryText?: string; roleQueries: string[] }> {
-    const { documentIds } = await this.documents.readyForSearch(profileId);
+  ): Promise<{ queryText?: string; roleQueries: string[] } | null> {
     const profile = await this.profiles.getById(profileId);
 
     const roleQueries = (profile.preferences.roles ?? []).map((r) => String(r)).slice(0, 5);
     const skills = (profile.preferences.skills ?? []).map((s) => String(s)).slice(0, 10);
 
-    // The profile's plain-text resume is a query source in its own right, and is
-    // the only one available to a user who never uploaded a file.
+    // The resume is a query source in its own right, and is the only one available
+    // to a user who never filled in their preferences by hand.
     const queryText = [profile.resumeText, skills.join(', ')]
       .filter((t) => t?.trim())
       .join('\n')
       .trim();
 
+    if (!queryText && roleQueries.length === 0) {
+      this.log.warn(
+        `Profile ${profileId} has no resume and no wanted roles; ` +
+          `skipping semantic ranking until it does`,
+      );
+      return null;
+    }
+
     return {
-      documentIds,
-      ...(queryText ? { queryText: queryText.slice(0, 20_000) } : {}),
+      ...(queryText ? { queryText: queryText.slice(0, MAX_QUERY_CHARS) } : {}),
       roleQueries,
     };
   }

@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { JobPreferences, RawJob } from '@job-agent/shared';
+import { JobPreferences, RawJob, DEFAULT_PREFERENCES } from '@job-agent/shared';
 
 const norm = (s?: string) => (s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
@@ -10,13 +10,18 @@ export const dedupeHash = (profileId: string, j: RawJob) =>
 
 /** Cheap rules applied before anything hits the DB / LLM. Returns a reason if the job should be dropped. */
 export function hardFilter(job: RawJob, prefs: JobPreferences): string | null {
+  // prefs is a jsonb column, so it can be a partial object on a row written
+  // before a field existed. Defaulting here keeps a malformed profile from
+  // throwing and stalling the whole jobs.raw partition.
+  const p = { ...DEFAULT_PREFERENCES, ...prefs };
+  const includes = (terms: unknown, haystack: string) =>
+    Array.isArray(terms) && terms.some((t) => t && haystack.includes(String(t).toLowerCase()));
+
   const title = job.title.toLowerCase();
   const company = job.company.toLowerCase();
-  if (prefs.excludedCompanies.some((c) => c && company.includes(c.toLowerCase())))
-    return 'excluded company';
-  if (prefs.excludedKeywords.some((k) => k && title.includes(k.toLowerCase())))
-    return 'excluded keyword';
-  if (prefs.remoteOnly && job.remote === false) return 'not remote';
+  if (includes(p.excludedCompanies, company)) return 'excluded company';
+  if (includes(p.excludedKeywords, title)) return 'excluded keyword';
+  if (p.remoteOnly && job.remote === false) return 'not remote';
   return null;
 }
 

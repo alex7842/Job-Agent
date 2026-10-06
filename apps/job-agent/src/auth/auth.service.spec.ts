@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ConflictException, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import type { Profile } from '../profile/profile.entity.js';
 import { AuthService } from './auth.service.js';
@@ -61,6 +62,7 @@ describe('AuthService', () => {
   let users: UsersRepo;
   let tokens: TokensRepo;
   let profiles: { forUser: (id: string) => Promise<Profile>; update: () => Promise<Profile> };
+  let config: ConfigService;
   let auth: AuthService;
 
   beforeEach(() => {
@@ -70,13 +72,53 @@ describe('AuthService', () => {
       forUser: async (id: string) => profileFor(id),
       update: async () => profileFor('x'),
     };
+    // One admin in the list, so /auth/me's isAdmin flag has something to match.
+    config = new ConfigService({ ADMIN_EMAILS: 'root@example.com' });
     auth = new AuthService(
       users as never,
       tokens as never,
       profiles as never,
       new PasswordService(),
       new JwtService({ secret: 'test-secret' }),
+      config,
     );
+  });
+
+  it('marks the allowlisted email as admin and nobody else', async () => {
+    config = new ConfigService({ ADMIN_EMAILS: 'root@example.com' });
+    const withAdmin = new AuthService(
+      users as never,
+      tokens as never,
+      profiles as never,
+      new PasswordService(),
+      new JwtService({ secret: 'test-secret' }),
+      config,
+    );
+    const admin = await withAdmin.register({
+      email: 'root@example.com',
+      password: 'a-good-password',
+    });
+    const other = await withAdmin.register({
+      email: 'someone@example.com',
+      password: 'a-good-password',
+    });
+    expect(admin.user.isAdmin).toBe(true);
+    expect(other.user.isAdmin).toBe(false);
+  });
+
+  it('denies admin to everyone when ADMIN_EMAILS is blank', async () => {
+    const open = new AuthService(
+      users as never,
+      tokens as never,
+      profiles as never,
+      new PasswordService(),
+      new JwtService({ secret: 'test-secret' }),
+      new ConfigService({}),
+    );
+    const pair = await open.register({ email: 'root@example.com', password: 'a-good-password' });
+    // Fail closed: a deployment that forgot to set the list must not have an
+    // open admin API.
+    expect(pair.user.isAdmin).toBe(false);
   });
 
   it('registers, and lower-cases the email handle', async () => {

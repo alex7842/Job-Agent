@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { Badge, cx } from './ui';
 import { JOB_STATUS_LABEL, jobStatusClass, scoreClass, semanticPercent } from '@/lib/format';
 import type { JobStatus } from '@job-agent/shared';
@@ -6,7 +6,7 @@ import type { JobStatus } from '@job-agent/shared';
 export function ScoreBadge({ score, pending }: { score: number | null; pending?: boolean }) {
   if (score === null || score === undefined) {
     return (
-      <Badge className="bg-neutral-500/10 text-neutral-400 ring-neutral-600/40">
+      <Badge className="bg-ignored-bg text-ignored ring-line">
         {pending ? 'scoring…' : 'unscored'}
       </Badge>
     );
@@ -33,20 +33,20 @@ export function SemanticBadge({
 }) {
   if (score === null || score === undefined) {
     return pending ? (
-      <Badge className="bg-neutral-500/10 text-neutral-500 ring-neutral-600/30">ranking…</Badge>
+      <Badge className="bg-ignored-bg text-ignored ring-line">ranking…</Badge>
     ) : null;
   }
   return (
     <Badge
-      className="font-mono tabular-nums bg-indigo-500/10 text-indigo-300 ring-indigo-500/30"
+      className="bg-semantic-bg font-mono tabular-nums text-semantic ring-semantic/30"
       title={
         rank
-          ? `Semantic similarity to your documents — rank #${rank} of the postings found`
-          : 'Semantic similarity to your documents'
+          ? `Semantic similarity to your resume — rank #${rank} of the postings found`
+          : 'Semantic similarity to your resume'
       }
     >
       {semanticPercent(score)}
-      {rank ? <span className="ml-1 text-indigo-400/70">#{rank}</span> : null}
+      {rank ? <span className="ml-0.5 opacity-60">#{rank}</span> : null}
     </Badge>
   );
 }
@@ -58,8 +58,57 @@ export function StatusBadge({ status }: { status: JobStatus }) {
 /** Small pill used for the "remote / location / salary" metadata line. */
 export function MetaPill({ children }: { children: ReactNode }) {
   return (
-    <span className="rounded-md bg-neutral-800/70 px-1.5 py-0.5 text-xs text-neutral-300">
+    <span className="rounded-md bg-surface-3 px-1.5 py-0.5 text-xs font-medium text-muted">
       {children}
+    </span>
+  );
+}
+
+/** The source a posting came from, in a quieter pill than the metadata. */
+export function SourceBadge({ source }: { source: string }) {
+  return (
+    <span className="font-mono text-[0.6875rem] tracking-tight text-subtle uppercase">
+      {source}
+    </span>
+  );
+}
+
+/**
+ * Two-letter monogram from the company name.
+ *
+ * Stands in for a logo: the API stores no logo URL, and fetching one from a
+ * third party would leak the user's browsing to that host.
+ */
+export function CompanyMark({ company, className }: { company: string; className?: string }) {
+  const initials = company
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((word) => word[0]?.toUpperCase() ?? '')
+    .join('');
+
+  // Deterministic hue from the name, so the same company keeps the same tile.
+  const hue = [...company].reduce((acc, ch) => (acc * 31 + ch.charCodeAt(0)) % 360, 7);
+
+  return (
+    <span
+      aria-hidden="true"
+      // oklch has no theme-conditional form, so the dark pair is carried as
+      // custom properties and swapped by the `dark:` utilities below.
+      style={
+        {
+          background: `oklch(95% 0.03 ${hue})`,
+          color: `oklch(45% 0.14 ${hue})`,
+          '--mark-dark-bg': `oklch(28% 0.05 ${hue})`,
+          '--mark-dark-fg': `oklch(82% 0.11 ${hue})`,
+        } as CSSProperties
+      }
+      className={cx(
+        'grid shrink-0 place-items-center rounded-xl text-sm font-bold dark:bg-(--mark-dark-bg) dark:text-(--mark-dark-fg)',
+        className ?? 'size-11',
+      )}
+    >
+      {initials || '?'}
     </span>
   );
 }

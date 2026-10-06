@@ -1,9 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { RawJob } from '@job-agent/shared';
 import { Profile } from '../../profile/profile.entity.js';
 import { stripHtml } from '../pipeline/filters.js';
-import { getJson, JobSource, searchQueries } from './job-source.interface.js';
+import { getJson, isCredentialFailure, JobSource, searchQueries } from './job-source.interface.js';
 
 interface JSearchResponse {
   data?: {
@@ -24,13 +24,26 @@ interface JSearchResponse {
   }[];
 }
 
-/** RapidAPI JSearch - aggregates Google for Jobs (LinkedIn, Indeed, Glassdoor, company pages...). */
+/**
+ * RapidAPI JSearch - aggregates Google for Jobs (LinkedIn, Indeed, Glassdoor,
+ * company pages...).
+ *
+ * A key is not enough to enable this source: RapidAPI keys are per-API, and one
+ * that has not subscribed to JSearch answers 403 "You are not subscribed to this
+ * API" forever. That used to fail the whole workflow, Temporal retried it three
+ * times, and the run produced nothing even though the other three sources were
+ * fine. So a 401/403 disables the source for the life of the process and the
+ * run carries on without it.
+ */
 @Injectable()
 export class JSearchSource implements JobSource {
   readonly name = 'jsearch';
+  private readonly log = new Logger(JSearchSource.name);
+  private rejected = false;
+
   constructor(private readonly config: ConfigService) {}
 
-  isEnabled = () => !!this.config.get('RAPIDAPI_KEY');
+  isEnabled = () => !this.rejected && !!this.config.get('RAPIDAPI_KEY');
 
   async fetch(profile: Profile): Promise<RawJob[]> {
     const prefs = profile.preferences;
@@ -47,13 +60,27 @@ export class JSearchSource implements JobSource {
       });
       if (prefs.remoteOnly) params.set('remote_jobs_only', 'true');
 
-      const res = await getJson<JSearchResponse>(
-        `https://jsearch.p.rapidapi.com/search?${params}`,
-        {
+      let res: JSearchResponse;
+      try {
+        // `/search`, not `/estimated-salary`. The two share a host and a key but
+        // nothing else: the salary endpoint takes `job_title` + `location` for one
+        // named role and answers "Missing job_title parameter" to a search query,
+        // which is a 400 Temporal will retry three times before failing the run.
+        res = await getJson<JSearchResponse>(`https://jsearch27.p.rapidapi.com/search?${params}`, {
           'X-RapidAPI-Key': this.config.get<string>('RAPIDAPI_KEY')!,
-          'X-RapidAPI-Host': 'jsearch.p.rapidapi.com',
-        },
-      );
+          'X-RapidAPI-Host': 'jsearch27.p.rapidapi.com',
+        });
+      } catch (error) {
+        if (!isCredentialFailure(error)) throw error;
+        this.rejected = true;
+        this.log.warn(
+          `disabling jsearch: ${(error as Error).message}. RapidAPI keys are per-API — ` +
+            `subscribe to JSearch at https://rapidapi.com/letscrape-6bRBa3/search-jobs ` +
+            `or clear RAPIDAPI_KEY. This run continues with the other sources.`,
+        );
+        // Jobs already collected from earlier queries are still worth publishing.
+        return out;
+      }
 
       for (const j of res.data ?? []) {
         const salary = j.job_min_salary

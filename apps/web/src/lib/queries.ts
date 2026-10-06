@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { DocumentKind, JobStatus, QueryJobs, UpdateProfileInput } from '@job-agent/shared';
+import type { JobStatus, QueryJobs, UpdateProfileInput } from '@job-agent/shared';
 import { api } from './api';
 
 /**
@@ -13,13 +13,12 @@ export const qk = {
   job: (id: string) => ['job', id] as const,
   runs: () => ['runs'] as const,
   profile: () => ['profile'] as const,
-  documents: () => ['documents'] as const,
   semanticStatus: () => ['semantic-status'] as const,
+  adminOverview: () => ['admin-overview'] as const,
 };
 
-/** Documents list + semantic ranking + the profile, invalidated together. */
+/** Ranking + the profile, invalidated together: a new resume changes every score. */
 const invalidateRetrieval = (qc: ReturnType<typeof useQueryClient>) => {
-  void qc.invalidateQueries({ queryKey: ['documents'] });
   void qc.invalidateQueries({ queryKey: ['semantic-status'] });
   void qc.invalidateQueries({ queryKey: ['jobs'] });
   void qc.invalidateQueries({ queryKey: ['job'] });
@@ -115,62 +114,44 @@ export function useUpdateProfile() {
   });
 }
 
-// ---------- documents & semantic search ----------
+// ---------- resume & semantic search ----------
 
 /**
- * Polls while something is still being indexed.
- *
- * Indexing happens over Kafka after the upload returns, so the status shown
- * straight after an upload is always stale. Polling only while a row is
- * undecided keeps the page live exactly when it is changing and idle otherwise.
+ * The upload is one synchronous request that stores, extracts and parses, so
+ * there is nothing to poll: the response already carries the parsed fields.
  */
-export function useDocuments() {
-  return useQuery({
-    queryKey: qk.documents(),
-    queryFn: () => api.listDocuments(),
-    refetchInterval: (query) => {
-      const docs = query.state.data;
-      return docs?.some((d) => d.status === 'awaiting_upload' || d.status === 'indexing')
-        ? 3_000
-        : false;
+export function useUploadResume() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (file: File) => api.uploadResume(file),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.profile() });
+      invalidateRetrieval(qc);
+    },
+  });
+}
+
+/**
+ * A mutation, not a query: the signed URL expires, so caching one would hand back
+ * a link that has stopped working. Fetched per click.
+ */
+export function useResumeLink() {
+  return useMutation({ mutationFn: () => api.resumeLink() });
+}
+
+export function useRemoveResume() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.removeResume(),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.profile() });
+      invalidateRetrieval(qc);
     },
   });
 }
 
 export function useSemanticStatus() {
   return useQuery({ queryKey: qk.semanticStatus(), queryFn: () => api.semanticStatus() });
-}
-
-export function useUploadDocument() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      file,
-      kind,
-      isPrimary,
-    }: {
-      file: File;
-      kind: DocumentKind;
-      isPrimary: boolean;
-    }) => api.uploadDocument(file, kind, isPrimary),
-    onSuccess: () => invalidateRetrieval(qc),
-  });
-}
-
-export function useReindexDocument() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) => api.reindexDocument(id),
-    onSuccess: () => invalidateRetrieval(qc),
-  });
-}
-
-export function useDeleteDocument() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) => api.deleteDocument(id),
-    onSuccess: () => invalidateRetrieval(qc),
-  });
 }
 
 export function useRankRunSemantically() {
@@ -186,5 +167,25 @@ export function useRankAllSemantically() {
   return useMutation({
     mutationFn: () => api.rankAllSemantically(),
     onSuccess: () => invalidateRetrieval(qc),
+  });
+}
+
+/**
+ * Cross-profile admin metrics.
+ *
+ * Polls rather than fetching once: the whole reason to open this page is to
+ * watch a backlog drain or a fallback take over, and both are only visible in a
+ * live view. Every 10s is enough to feel live without turning an idle tab into a
+ * polling loop — the request is three small aggregates, not a report.
+ */
+export function useAdminOverview() {
+  return useQuery({
+    queryKey: qk.adminOverview(),
+    queryFn: () => api.adminOverview(),
+    refetchInterval: 10_000,
+    // A 403 is a terminal answer for this session, not something to retry every
+    // 10 seconds for as long as the tab is open.
+    retry: (failureCount, error) =>
+      (error as { status?: number } | null)?.status !== 403 && failureCount < 3,
   });
 }

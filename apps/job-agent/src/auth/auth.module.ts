@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ProfileModule } from '../profile/profile.module.js';
 import { AuthController } from './auth.controller.js';
 import { AuthService } from './auth.service.js';
+import { AdminGuard } from './admin.guard.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { PasswordService } from './password.service.js';
 import { RefreshToken } from './refresh-token.entity.js';
@@ -32,8 +33,10 @@ if (!secret) {
     JwtModule.register({ secret }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, PasswordService, JwtAuthGuard],
-  // The guard and JwtService are consumed by Jobs/Profile modules via @UseGuards.
-  exports: [AuthService, JwtAuthGuard, JwtModule],
+  providers: [AuthService, PasswordService, JwtAuthGuard, AdminGuard],
+  // The guards and JwtService are consumed by Jobs/Profile/Admin modules via
+  // @UseGuards; the email allowlist is read by the auth controller so /auth/me
+  // can tell the web app whether to show the admin link.
+  exports: [AuthService, JwtAuthGuard, AdminGuard, JwtModule],
 })
 export class AuthModule {}

@@ -20,11 +20,11 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: task_app
+      POSTGRES_DB: job_agent
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U postgres -d task_app']
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d job_agent']
       interval: 5s
       timeout: 5s
       retries: 10
@@ -70,15 +70,22 @@ services:
     depends_on:
       temporal-postgres:
         condition: service_healthy
+    # 7333 on the host, not 7233: another project's Temporal already publishes
+    # 7233, and silently losing that binding is what left this container off the
+    # compose network and looping on `nc -z temporal-postgres` forever. Inside the
+    # network it is still reachable as temporal:7233, which is what the UI uses.
     ports:
-      - '7233:7233'
+      - '7333:7233'
     environment:
       - DB=postgres12
       - DB_PORT=5432
       - POSTGRES_USER=temporal
       - POSTGRES_PWD=temporal
       - POSTGRES_SEEDS=temporal-postgres
-      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+      # No DYNAMIC_CONFIG_FILE_PATH: current images ship without
+      # config/dynamicconfig/development-sql.yaml and treat a missing dynamic
+      # config file as fatal, so the server exits on boot with it set. Nothing
+      # here overrides server defaults anyway.
       - VISIBILITY_DBNAME=temporal_visibility
 
   temporal-ui:

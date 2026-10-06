@@ -44,7 +44,7 @@ describe('RagClientService', () => {
   it('returns null instead of throwing when it is not configured', async () => {
     const client = new RagClientService(config());
     expect(await client.search({ profileId: PROFILE, userId: USER })).toBeNull();
-    expect(await client.ingestDocument('doc', PROFILE)).toBeNull();
+    expect(await client.putResume(PROFILE, 'r.txt', Buffer.from('x'), 'text/plain')).toBeNull();
   });
 
   // ---------- signing ----------
@@ -53,14 +53,12 @@ describe('RagClientService', () => {
     const calls = stubFetch({ ok: true });
     const client = new RagClientService(config({ RAG_INTERNAL_SECRET: SECRET }));
 
-    await client.ingestDocument('doc-1', PROFILE);
+    await client.putResume(PROFILE, 'r.txt', Buffer.from('x'), 'text/plain');
 
     // The RAG service's guard recomputes HMAC(METHOD:/path); signing anything
     // else — or leaving the query string in — is a 401 in production.
     const headers = calls[0].init.headers as Record<string, string>;
-    expect(headers[INTERNAL_TOKEN_HEADER]).toBe(
-      internalToken(SECRET, 'POST', '/internal/documents/ingest'),
-    );
+    expect(headers[INTERNAL_TOKEN_HEADER]).toBe(internalToken(SECRET, 'POST', '/internal/resumes'));
   });
 
   it('keeps the query string out of the signed path', async () => {
@@ -76,25 +74,23 @@ describe('RagClientService', () => {
     expect(headers[INTERNAL_TOKEN_HEADER]).toBe(internalToken(SECRET, 'POST', '/internal/search'));
   });
 
-  // ---------- relayed upload ----------
+  // ---------- resume upload ----------
 
-  it('sends bytes as a raw body with the declared size header', async () => {
-    const calls = stubFetch({ status: 'ready', indexed: 2 });
+  it('relays the resume bytes with its name and profile as headers', async () => {
+    const calls = stubFetch({ objectKey: 'resumes/p/a.txt', text: 'hello', detected: 'text' });
     const client = new RagClientService(config({ RAG_INTERNAL_SECRET: SECRET }));
     const content = Buffer.from('resume bytes');
 
-    await client.putContent('doc-1', PROFILE, content, 'application/pdf');
+    await client.putResume(PROFILE, 'my resume.pdf', content, 'application/pdf');
 
     const headers = calls[0].init.headers as Record<string, string>;
-    expect(calls[0].init.method).toBe('PUT');
+    expect(calls[0].init.method).toBe('POST');
     expect(headers['x-rag-profile-id']).toBe(PROFILE);
-    // The RAG service compares this against the bytes it received, so a wrong
-    // value turns a good upload into a 400.
-    expect(headers['x-rag-size-bytes']).toBe(String(content.length));
+    // The file name picks the extractor, so it cannot be percent-encoded into
+    // something the sniffer will not recognise.
+    expect(decodeURIComponent(headers['x-rag-file-name'])).toBe('my resume.pdf');
     expect(headers['content-type']).toBe('application/pdf');
-    expect(headers[INTERNAL_TOKEN_HEADER]).toBe(
-      internalToken(SECRET, 'PUT', `/internal/documents/${'doc-1'}/content`),
-    );
+    expect(headers[INTERNAL_TOKEN_HEADER]).toBe(internalToken(SECRET, 'POST', '/internal/resumes'));
   });
 
   it('trims trailing slashes from the configured base url', async () => {

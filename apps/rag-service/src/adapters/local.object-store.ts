@@ -44,6 +44,19 @@ export class LocalObjectStore implements ObjectStore {
     return `local://${this.root}`;
   }
 
+  /**
+   * Nothing to sign: the bytes are a file on this machine and no HTTP surface
+   * serves them. The `local://` marker says so, the same convention presignPut
+   * uses, so the caller can tell "no URL exists" from a broken store.
+   */
+  async presignGet(
+    _key: string,
+    _expiresInSeconds: number,
+    _options: { fileName?: string; contentType?: string } = {},
+  ): Promise<string> {
+    return `local://${this.root}`;
+  }
+
   async delete(key: string): Promise<void> {
     const path = this.pathFor(key);
     await rm(path, { force: true });

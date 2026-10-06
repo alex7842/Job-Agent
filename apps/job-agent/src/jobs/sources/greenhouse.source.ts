@@ -20,7 +20,12 @@ interface GreenhouseResponse {
 @Injectable()
 export class GreenhouseSource implements JobSource {
   readonly name = 'greenhouse';
-  isEnabled = (p: Profile) => p.preferences.greenhouseBoards.length > 0;
+  // Defensive on both the profile and the field: `preferences` is a jsonb column,
+  // so it can hold a partial object, and `isEnabled` is also called by the admin
+  // dashboard with a synthetic probe profile. Reading `.length` off a missing
+  // `greenhouseBoards` threw a TypeError that took the whole overview down with
+  // a 500 — reported as a broken dashboard rather than as one unset source.
+  isEnabled = (p: Profile) => (p?.preferences?.greenhouseBoards?.length ?? 0) > 0;
 
   async fetch(profile: Profile): Promise<RawJob[]> {
     const out: RawJob[] = [];

@@ -77,6 +77,28 @@ export class S3ObjectStore implements ObjectStore {
     );
   }
 
+  async presignGet(
+    key: string,
+    expiresInSeconds: number,
+    options: { fileName?: string; contentType?: string } = {},
+  ): Promise<string> {
+    const { fileName, contentType } = options;
+    return getSignedUrl(
+      this.client,
+      new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        // Without inline, S3 answers with `attachment` and a PDF downloads
+        // instead of rendering in the tab the user just opened.
+        ...(fileName
+          ? { ResponseContentDisposition: `inline; filename="${sanitizeForHeader(fileName)}"` }
+          : {}),
+        ...(contentType ? { ResponseContentType: contentType } : {}),
+      }),
+      { expiresIn: expiresInSeconds },
+    );
+  }
+
   async delete(key: string): Promise<void> {
     await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
   }
@@ -94,3 +116,11 @@ async function streamToBuffer(stream: Readable): Promise<Buffer> {
   }
   return Buffer.concat(chunks);
 }
+
+/**
+ * A quoted-string value for Content-Disposition. A file name is user-supplied and
+ * ends up in a response header, so quotes and backslashes are escaped rather than
+ * passed through — an unescaped quote would let the name terminate the header
+ * early and append parameters of its own.
+ */
+const sanitizeForHeader = (value: string): string => value.replace(/[\\\"\r\n]/g, '');

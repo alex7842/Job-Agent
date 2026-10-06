@@ -22,7 +22,7 @@ import type { VectorStore } from './ports.js';
           case 'memory':
             return new MemoryVectorStore();
           default:
-            throw new Error(`Unknown VECTOR_STORE "${choice}". Use one of: pinecone, memory.`);
+            throw new Error(`Unknown find VECTOR_STORE "${choice}". Use one of: pinecone, memory.`);
         }
       },
     },

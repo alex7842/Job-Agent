@@ -99,7 +99,7 @@ describe('MemoryVectorStore', () => {
     const store = new MemoryVectorStore();
     await store.upsert(ns, [
       record('job', [1, 0], { kind: VectorKind.JOB }),
-      record('doc', [1, 0], { kind: VectorKind.DOCUMENT }),
+      record('other', [1, 0], { kind: 'other' }),
     ]);
 
     const jobsOnly = await store.query(ns, [1, 0], { topK: 10, filter: { kind: VectorKind.JOB } });
@@ -119,7 +119,7 @@ describe('MemoryVectorStore', () => {
 
   it('overwrites in place on a repeated upsert of the same id', async () => {
     const store = new MemoryVectorStore();
-    const id = vectorId(VectorKind.DOCUMENT, 'doc1', 0);
+    const id = vectorId(VectorKind.JOB, 'doc1', 0);
     await store.upsert(ns, [record(id, [1, 0], { text: 'first' })]);
     await store.upsert(ns, [record(id, [0, 1], { text: 'second' })]);
     expect(store.sizeOf(ns)).toBe(1);
@@ -128,21 +128,18 @@ describe('MemoryVectorStore', () => {
   it('lists and deletes by id so a re-index can drop only what it replaced', async () => {
     const store = new MemoryVectorStore();
     await store.upsert(ns, [
-      record(vectorId(VectorKind.DOCUMENT, 'doc1', 0), [1, 0]),
-      record(vectorId(VectorKind.DOCUMENT, 'doc1', 1), [0, 1]),
-      record(vectorId(VectorKind.DOCUMENT, 'doc2', 0), [1, 1]),
+      record(vectorId(VectorKind.JOB, 'doc1', 0), [1, 0]),
+      record(vectorId(VectorKind.JOB, 'doc1', 1), [0, 1]),
+      record(vectorId(VectorKind.JOB, 'doc2', 0), [1, 1]),
     ]);
 
-    const doc1 = [
-      vectorId(VectorKind.DOCUMENT, 'doc1', 0),
-      vectorId(VectorKind.DOCUMENT, 'doc1', 1),
-    ];
-    expect((await store.listIds(ns, `${VectorKind.DOCUMENT}:doc1:`)).sort()).toEqual(doc1.sort());
+    const doc1 = [vectorId(VectorKind.JOB, 'doc1', 0), vectorId(VectorKind.JOB, 'doc1', 1)];
+    expect((await store.listIds(ns, `${VectorKind.JOB}:doc1:`)).sort()).toEqual(doc1.sort());
 
     // Simulates a re-index that produced one chunk instead of two: keep 0, drop 1.
-    await store.deleteByIds(ns, [vectorId(VectorKind.DOCUMENT, 'doc1', 1)]);
-    expect(await store.listIds(ns, `${VectorKind.DOCUMENT}:doc1:`)).toEqual([
-      vectorId(VectorKind.DOCUMENT, 'doc1', 0),
+    await store.deleteByIds(ns, [vectorId(VectorKind.JOB, 'doc1', 1)]);
+    expect(await store.listIds(ns, `${VectorKind.JOB}:doc1:`)).toEqual([
+      vectorId(VectorKind.JOB, 'doc1', 0),
     ]);
     expect(store.sizeOf(ns)).toBe(2);
   });
@@ -150,11 +147,12 @@ describe('MemoryVectorStore', () => {
   it('deletes by prefix and by namespace', async () => {
     const store = new MemoryVectorStore();
     await store.upsert(ns, [
-      record(vectorId(VectorKind.DOCUMENT, 'doc1', 0), [1, 0]),
-      record(vectorId(VectorKind.JOB, 'job1', 0), [0, 1]),
+      record(vectorId(VectorKind.JOB, 'job1', 0), [1, 0]),
+      record('resume:1', [0, 1]),
     ]);
 
-    await store.deleteByPrefix(ns, `${VectorKind.DOCUMENT}:`);
+    // Only the job prefix goes; the record outside it is left alone.
+    await store.deleteByPrefix(ns, `${VectorKind.JOB}:`);
     expect(store.sizeOf(ns)).toBe(1);
 
     await store.deleteNamespace(ns);

@@ -15,36 +15,13 @@ import { z } from 'zod';
  * embedding model, because comparing them is the entire point.
  */
 
-export const VECTOR_KINDS = ['job', 'document'] as const;
+export const VECTOR_KINDS = ['job'] as const;
 export type VectorKind = (typeof VECTOR_KINDS)[number];
 
 /** What a stored vector represents. Lets one namespace serve both corpora. */
-export const VectorKind = { JOB: 'job', DOCUMENT: 'document' } as const satisfies Record<
-  string,
-  VectorKind
->;
+export const VectorKind = { JOB: 'job' } as const satisfies Record<string, VectorKind>;
 
-// ---------- documents ----------
-
-export const DOCUMENT_KINDS = ['resume', 'cover_letter', 'other'] as const;
-export type DocumentKind = (typeof DOCUMENT_KINDS)[number];
-
-export const DOCUMENT_STATUSES = [
-  'uploaded', // object is in the bucket, nothing extracted yet
-  'indexing', // a consumer is extracting/embedding it
-  'ready', // chunks are in the vector store
-  'failed', // extraction or embedding failed; errorMessage says why
-  'deleted', // soft-deleted, vectors removed
-] as const;
-export type DocumentStatus = (typeof DOCUMENT_STATUSES)[number];
-
-export const DOCUMENT_STATUS = {
-  UPLOADED: 'uploaded',
-  INDEXING: 'indexing',
-  READY: 'ready',
-  FAILED: 'failed',
-  DELETED: 'deleted',
-} as const satisfies Record<string, DocumentStatus>;
+// ---------- resume files ----------
 
 /** Bytes. Keeps a stray 2GB file from wedging the extractors. */
 export const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
@@ -70,23 +47,28 @@ export const documentExtension = (fileName: string): DocumentExtension | null =>
     : null;
 };
 
-export type DocumentSummary = {
-  id: string;
-  profileId: string;
-  kind: DocumentKind;
-  fileName: string;
-  mimeType: string;
-  sizeBytes: number;
-  status: DocumentStatus;
-  /** Set while a resume is used as the search query source. */
-  isPrimary: boolean;
-  chunkCount: number;
-  errorMessage: string | null;
-  createdAt: string;
-  updatedAt: string;
+/**
+ * The Content-Type a stored file should be *served* as, from its extension.
+ *
+ * Separate from what it was stored as on purpose: a bucket object written before
+ * the extractor started recording the sniffed type is `application/octet-stream`,
+ * and a browser downloads that instead of rendering it. Overriding the type in the
+ * response fixes those objects without a re-upload.
+ */
+export const documentMimeFor = (fileName: string): string | null => {
+  switch (documentExtension(fileName)) {
+    case 'pdf':
+      return 'application/pdf';
+    case 'docx':
+      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    case 'txt':
+      return 'text/plain';
+    case 'md':
+      return 'text/markdown';
+    default:
+      return null;
+  }
 };
-
-export const documentKindSchema = z.enum(DOCUMENT_KINDS);
 
 // ---------- ingestion ----------
 
@@ -107,56 +89,9 @@ export type VectorMetadata = {
   source?: string;
   title?: string;
   company?: string;
-  /** documents only */
-  documentId?: string;
-  documentKind?: DocumentKind;
   chunkIndex?: number;
   /** The embedded text, kept for reranking and for explaining a match. */
   text: string;
-};
-
-export type IngestDocumentsResult = {
-  documentId: string;
-  chunks: number;
-  /** Chunk vectors actually written; 0 when the document had no text. */
-  indexed: number;
-  status: DocumentStatus;
-  errorMessage?: string;
-};
-
-// ---------- uploads ----------
-
-/**
- * How the bytes reach the object store.
- *
- * 's3' is the production path: the RAG service presigns a PUT and the browser
- * sends the file straight to the bucket, so the bytes never touch either API.
- * 'local' is the credential-free dev path, where the bytes have to be relayed
- * through the job agent because there is no bucket to presign against.
- */
-export const UPLOAD_MODES = ['s3', 'local'] as const;
-export type UploadMode = (typeof UPLOAD_MODES)[number];
-
-export type PresignDocumentRequest = {
-  /** Minted by the job agent, which owns the document catalog. */
-  documentId: string;
-  profileId: string;
-  userId: string;
-  kind: DocumentKind;
-  fileName: string;
-  mimeType: string;
-  sizeBytes: number;
-  isPrimary?: boolean;
-};
-
-export type PresignDocumentResponse = {
-  /** Where the object lives. Owned by the RAG service; the caller only stores it. */
-  objectKey: string;
-  mode: UploadMode;
-  /** A presigned bucket URL when mode is 's3'; null in local mode. */
-  uploadUrl: string | null;
-  expiresInSeconds: number;
-  maxBytes: number;
 };
 
 export type IngestJobsResult = {
@@ -171,14 +106,10 @@ export type SearchRequest = {
   profileId: string;
   userId: string;
   /**
-   * Raw text to embed as the query. Omit it to let the RAG service build the
-   * query from the user's own documents (see `documentIds`), which is the
-   * normal case: the resume is already indexed, so re-shipping its text from
-   * the job agent would be a second copy of the same thing.
+   * Raw text to embed as the query: the candidate's resume, plus their skills.
+   * Omit it when only wanted roles are known.
    */
   queryText?: string;
-  /** Documents whose extracted text becomes the query. */
-  documentIds?: string[];
   /** One query per wanted role; merged with RRF alongside the other queries. */
   roleQueries?: string[];
   topK?: number;
@@ -214,14 +145,10 @@ export type SearchResponse = {
 /** A query longer than this is truncated; embedding cost is linear in length. */
 export const MAX_QUERY_CHARS = 20_000;
 
-/** Documents whose text is folded into one query. More is just noise. */
-export const MAX_QUERY_DOCUMENTS = 10;
-
 const searchRequestShape = z.object({
   profileId: z.string().min(1),
   userId: z.string().min(1),
   queryText: z.string().max(MAX_QUERY_CHARS).optional(),
-  documentIds: z.array(z.string().min(1)).max(MAX_QUERY_DOCUMENTS).optional(),
   roleQueries: z.array(z.string().min(1).max(500)).max(10).optional(),
   topK: z.number().int().min(1).max(200).optional(),
   runId: z.string().optional(),
@@ -235,11 +162,8 @@ const searchRequestShape = z.object({
  * wrong.
  */
 export const searchRequestSchema = searchRequestShape.refine(
-  (r) =>
-    Boolean(r.queryText?.trim()) ||
-    Boolean(r.documentIds?.length) ||
-    Boolean(r.roleQueries?.some((q) => q.trim())),
-  { message: 'One of queryText, documentIds or roleQueries is required' },
+  (r) => Boolean(r.queryText?.trim()) || Boolean(r.roleQueries?.some((q) => q.trim())),
+  { message: 'One of queryText or roleQueries is required' },
 );
 
 /** The standard RRF damping constant. Larger values flatten rank differences. */

@@ -1,9 +1,50 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Job Agent</title>
+    <title>Jobly — find the roles that actually fit</title>
+    <meta
+      name="description"
+      content="Jobly crawls the boards you care about, scores every posting against your resume, and ranks the rest by how close it is to what you have done."
+    />
+    <meta property="og:title" content="Jobly — find the roles that actually fit" />
+    <meta
+      property="og:description"
+      content="Jobly scores every posting against your resume and ranks the rest by how close it is to what you have done."
+    />
+    <meta property="og:type" content="website" />
+    <link rel="icon" type="image/png" href="/logos/jobly-logo-no-text.png" />
+    <link rel="apple-touch-icon" href="/logos/jobly-logo-no-text.png" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="preconnect" href="https://rsms.me/" />
+    <link rel="stylesheet" href="https://rsms.me/inter/inter.css" />
+    <script>
+      /*
+       * Applied before first paint, inline on purpose.
+       *
+       * React cannot do this: the provider only mounts after the bundle has
+       * parsed and executed, so reading localStorage in an effect paints one
+       * frame of the wrong theme first — a white flash on a dark reload. This
+       * runs during head parsing, so `.dark` is on <html> before any content
+       * exists. Light stays the default when nothing is stored.
+       */
+      (function () {
+        try {
+          var stored = localStorage.getItem('jobagent.theme');
+          var theme =
+            stored === 'light' || stored === 'dark'
+              ? stored
+              : window.matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light';
+          document.documentElement.classList.toggle('dark', theme === 'dark');
+          document.documentElement.dataset.theme = theme;
+        } catch (e) {
+          // Private mode / storage blocked: the light default in CSS stands.
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

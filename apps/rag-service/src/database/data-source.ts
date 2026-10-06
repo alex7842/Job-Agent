@@ -1,7 +1,6 @@
 import 'reflect-metadata';
 import '../env.js';
 import { DataSource } from 'typeorm';
-import { DocumentEntity } from './document.entity.js';
 
 /** Discrete DB_* fields, matching apps/job-agent so one .env drives both services. */
 export const databaseOptions = {
@@ -15,14 +14,10 @@ export const databaseOptions = {
 };
 
 /**
- * Standalone data source for the TypeORM CLI, so `pnpm migration:run` targets
- * whatever database the process was given.
+ * Standalone data source for the TypeORM CLI.
+ *
+ * The RAG service keeps no tables of its own any more: a resume is extracted on
+ * the way through and its text lands on the job agent's profile row, so there is
+ * nothing here for a migration to create.
  */
-export const AppDataSource = new DataSource({
-  ...databaseOptions,
-  entities: [DocumentEntity],
-  migrations: ['dist/database/migrations/*.js'],
-  // Never on: the RAG service owns real migrations, and letting TypeORM invent
-  // schema would fight the job agent's table ownership.
-  synchronize: false,
-});
+export const AppDataSource = new DataSource({ ...databaseOptions, synchronize: false });

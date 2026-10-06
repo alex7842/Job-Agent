@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
-import { AuthCard, AuthError, Field, useAuthForm } from '@/components/AuthForm';
+import { AuthCard, AuthError, AuthSubmit, Field, useAuthForm } from '@/components/AuthForm';
 import { useAuth } from '@/lib/auth';
 
 export function LoginPage() {
@@ -26,7 +26,7 @@ export function LoginPage() {
       footer={
         <>
           No account?{' '}
-          <Link to="/register" className="text-neutral-200 hover:text-neutral-50">
+          <Link to="/register" className="font-medium text-accent hover:underline">
             Create one
           </Link>
         </>
@@ -54,13 +54,7 @@ export function LoginPage() {
           onChange={(e) => setPassword(e.target.value)}
         />
 
-        <button
-          type="submit"
-          disabled={busy}
-          className="w-full rounded-md bg-neutral-100 px-3 py-2 text-sm font-medium text-neutral-900 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {busy ? 'Signing in…' : 'Sign in'}
-        </button>
+        <AuthSubmit busy={busy}>{busy ? 'Signing in…' : 'Sign in'}</AuthSubmit>
       </form>
     </AuthCard>
   );

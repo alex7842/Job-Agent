@@ -50,7 +50,7 @@ job-agent/
                                  ║  jobs.new  ║
                                  ╚═════╤══════╝
                     ┌──────────────────┴──────────────────┐
-                    │  ScorerService → Gemini            │
+                    │  ScorerService → Fireworks         │
                     │  saveScore (score, reason,          │
                     │  highlights, redFlags)              │
                     └──────────────────┬──────────────────┘
@@ -115,7 +115,7 @@ Requires Node 22+, pnpm 11+, and Docker.
 
 ```bash
 pnpm install
-cp .env.example .env          # then fill in GEMINI_API_KEY and any source keys
+cp .env.example .env          # then fill in FIREWORKS_API_KEY and any source keys
 pnpm infra:up                 # Postgres + Kafka + Temporal + Temporal UI
 pnpm dev                      # API :3000, worker, and the web app
 ```
@@ -216,7 +216,7 @@ by meaning rather than keyword overlap.
                        │      │                                  │
                        │    chunker (900 chars, 150 overlap)    │
                        │      │                                  │
-                       │    embeddings (Gemini, or offline)  │
+                       │    embeddings (Fireworks, or offline)  │
                        │      │                               │
                        │      │                                  │
                        │    vector store (Pinecone | memory)    │
@@ -266,11 +266,11 @@ for the indexing events — so a search is answerable while indexing continues.
 
 Every external dependency is a port with a real adapter and a local one:
 
-| Port       | Production                             | Local fallback                  | Selected by          |
-| ---------- | -------------------------------------- | ------------------------------- | -------------------- |
-| Embeddings | Gemini (`gemini-embedding-001`, 1536d) | `offline` (deterministic, 384d) | `EMBEDDING_PROVIDER` |
-| Vectors    | Pinecone                               | `memory` (per-process)          | `VECTOR_STORE`       |
-| Objects    | S3                                     | `local` (filesystem)            | `OBJECT_STORE`       |
+| Port       | Production                              | Local fallback                  | Selected by          |
+| ---------- | --------------------------------------- | ------------------------------- | -------------------- |
+| Embeddings | Fireworks (`qwen3-embedding-8b`, 1024d) | `offline` (deterministic, 384d) | `EMBEDDING_PROVIDER` |
+| Vectors    | Pinecone                                | `memory` (per-process)          | `VECTOR_STORE`       |
+| Objects    | S3                                      | `local` (filesystem)            | `OBJECT_STORE`       |
 
 The fallbacks exist so the whole flow runs and is testable with zero credentials
 and no network — the same ports, the same ranking maths. They are **not** good
@@ -282,7 +282,7 @@ every search response and on `GET /health`, so a lexical-only result set is neve
 mistaken for a real semantic one.
 
 **The Pinecone index dimension is fixed at creation and must equal the embedding
-model's output** (1536 for `gemini-embedding-001`, 384 for `offline`). A mismatch is checked at boot and fails loudly, because
+model's output** (1024 for `qwen3-embedding-8b`, 384 for `offline`). A mismatch is checked at boot and fails loudly, because
 otherwise it shows up as a mysteriously empty index rather than an error.
 
 ### Security
@@ -380,7 +380,7 @@ early on a job that already has a score.
 ### Still to come
 
 Nothing on the upload → index → rank → display path. Not yet done, in rough
-priority order: true cloud verification (Gemini/Pinecone/S3 have never been run
+priority order: true cloud verification (Fireworks/Pinecone/S3 have never been run
 against live credentials, only their fallbacks), a proper
 `documents.indexed` backfill for documents indexed before this table existed,
 and pagination on the jobs list.

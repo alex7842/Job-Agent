@@ -3,7 +3,6 @@ import { ConfigService } from '@nestjs/config';
 import type { SearchResponse } from '@job-agent/shared';
 import { SemanticMatchService } from './semantic-match.service.js';
 import { Job } from '../jobs/entities/job.entity.js';
-import type { DocumentsService } from '../documents/documents.service.js';
 import type { ProfileService } from '../profile/profile.service.js';
 import type { RagClientService } from '../rag/rag-client.service.js';
 
@@ -85,7 +84,7 @@ class FakeRag {
       },
     ],
     degraded: false,
-    embeddingModel: 'gemini-embedding-001',
+    embeddingModel: 'fireworks/qwen3-embedding-8b',
     vectorStore: 'pinecone',
   };
   /** Returned on the first N calls, to simulate vectors that are still landing. */
@@ -101,25 +100,21 @@ class FakeRag {
   }
 }
 
-function build(
-  env: Record<string, string> = {},
-  documents: { documentIds: string[] } = { documentIds: [] },
-) {
+function build(env: Record<string, string> = {}, profile: Record<string, unknown> = {}) {
   const jobs = new FakeJobRepository();
   const rag = new FakeRag();
-  const documentsService = { readyForSearch: async () => ({ primaryId: null, ...documents }) };
   const profiles = {
     getById: async () => ({
       id: PROFILE,
       userId: USER,
       resumeText: 'Backend engineer with Kubernetes and PostgreSQL experience.',
       preferences: { roles: ['Staff Backend Engineer'], skills: ['TypeScript', 'Go'] },
+      ...profile,
     }),
   };
   const service = new SemanticMatchService(
     jobs as never,
     rag as unknown as RagClientService,
-    documentsService as unknown as DocumentsService,
     profiles as unknown as ProfileService,
     config({ RAG_DRAIN_WAIT_MS: '50', RAG_EMPTY_SEARCH_RETRY_MS: '10', ...env }),
   );
@@ -129,15 +124,16 @@ function build(
 describe('SemanticMatchService', () => {
   // ---------- query construction ----------
 
-  it('searches with the user’s own documents and their resume text', async () => {
-    const { service, jobs, rag } = build({}, { documentIds: ['doc-1'] });
+  it('searches with the resume text and the wanted roles', async () => {
+    const { service, jobs, rag } = build();
     jobs.add({ id: 'job-1', profileId: PROFILE, runId: RUN, scoredAt: new Date() });
 
     await service.rankRun(RUN, PROFILE);
 
-    // The document text lives in the RAG service's index; only its id travels.
+    // Everything travels as text from the profile row: there is no catalog to
+    // join against on the other side.
     const request = rag.requests[0];
-    expect(request.documentIds).toEqual(['doc-1']);
+    expect(request.documentIds).toBeUndefined();
     expect(String(request.queryText)).toContain('Kubernetes');
     expect(request.roleQueries).toEqual(['Staff Backend Engineer']);
     expect(request.runId).toBe(RUN);

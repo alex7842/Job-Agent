@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { ApiError } from '@/lib/api';
+import { LogoLockup } from '@/components/brand';
+import { Button, Input } from '@/components/ui';
 
 /**
  * Shared shell for both auth screens. Kept in one place so login and register
@@ -18,15 +20,26 @@ export function AuthCard({
   footer: ReactNode;
 }) {
   return (
-    <div className="flex min-h-full items-center justify-center px-5 py-12">
-      <div className="w-full max-w-sm">
-        <div className="mb-6 text-center">
-          <span className="text-sm font-semibold tracking-tight text-neutral-100">Job Agent</span>
-          <h1 className="mt-3 text-lg font-semibold text-neutral-50">{title}</h1>
-          <p className="mt-1 text-sm text-neutral-500">{subtitle}</p>
+    <div className="relative flex min-h-full items-center justify-center px-5 py-12">
+      {/* Decorative backdrop: a soft wash behind the card, so the form reads as
+          a panel floating over a surface rather than a bare column of inputs. */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 bg-linear-to-br from-accent/12 via-transparent to-transparent"
+      />
+
+      <div className="relative w-full max-w-sm">
+        <div className="mb-7 text-center">
+          {/* Bigger than the header lockup: this is the first thing a new user
+              sees, and the page has no other chrome to carry the name. */}
+          <LogoLockup markClassName="h-10" className="justify-center gap-3" />
+          <h1 className="mt-4 text-lg font-semibold tracking-tight text-fg">{title}</h1>
+          <p className="mt-1.5 text-sm text-muted">{subtitle}</p>
         </div>
-        {children}
-        <div className="mt-6 text-center text-sm text-neutral-500">{footer}</div>
+
+        <div className="rounded-card border border-line bg-surface p-6 shadow-lift">{children}</div>
+
+        <div className="mt-5 text-center text-sm text-subtle">{footer}</div>
       </div>
     </div>
   );
@@ -38,11 +51,8 @@ export function Field({
 }: { label: string } & React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <label className="block">
-      <span className="mb-1.5 block text-xs font-medium text-neutral-400">{label}</span>
-      <input
-        {...props}
-        className="w-full rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm text-neutral-100 outline-none transition placeholder:text-neutral-600 focus:border-neutral-600"
-      />
+      <span className="mb-1.5 block text-xs font-medium text-muted">{label}</span>
+      <Input {...props} />
     </label>
   );
 }
@@ -56,9 +66,21 @@ export function AuthError({ error }: { error: unknown }) {
         ? error.message
         : String(error);
   return (
-    <div className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+    <div
+      role="alert"
+      className="rounded-lg border border-danger/30 bg-danger-bg px-3 py-2 text-sm text-danger"
+    >
       {message}
     </div>
+  );
+}
+
+/** Full-width submit for the auth forms. */
+export function AuthSubmit({ busy, children }: { busy: boolean; children: ReactNode }) {
+  return (
+    <Button type="submit" variant="primary" size="lg" className="w-full" loading={busy}>
+      {children}
+    </Button>
   );
 }
 

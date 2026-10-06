@@ -42,6 +42,17 @@ export function formatBytes(bytes: number): string {
 }
 
 /**
+ * `resumeSizeBytes` arrives as a string because it is a bigint column on the
+ * wire. Returns null when it is absent or not a number, so the UI can omit the
+ * size rather than print "undefined".
+ */
+export function parseBytes(value: string | null | undefined): number | null {
+  if (value == null || value.trim() === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+/**
  * A similarity, not a score.
  *
  * Rendered as a percentage because that is how cosine similarity reads to
@@ -54,11 +65,19 @@ export function semanticPercent(value: number | null | undefined): string {
   return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
 }
 
+/*
+ * Status and score styling.
+ *
+ * Each map returns classes built from the theme tokens declared in index.css,
+ * so a status looks right in light and dark without a `dark:` twin per entry.
+ * The ramp below is for the LLM's 0-100 verdict only; vector similarity is not
+ * on that scale and uses the semantic tone instead.
+ */
 const JOB_STATUS_STYLES: Record<JobStatus, string> = {
-  new: 'bg-sky-500/15 text-sky-300 ring-sky-500/30',
-  saved: 'bg-amber-500/15 text-amber-300 ring-amber-500/30',
-  applied: 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30',
-  ignored: 'bg-neutral-500/15 text-neutral-400 ring-neutral-500/30',
+  new: 'bg-new-bg text-new ring-new/30',
+  saved: 'bg-saved-bg text-saved ring-saved/30',
+  applied: 'bg-applied-bg text-applied ring-applied/30',
+  ignored: 'bg-ignored-bg text-ignored ring-line',
 };
 
 export const JOB_STATUS_LABEL: Record<JobStatus, string> = {
@@ -73,10 +92,10 @@ export function jobStatusClass(status: JobStatus): string {
 }
 
 const RUN_STATUS_STYLES: Record<RunStatus, string> = {
-  running: 'bg-sky-500/15 text-sky-300 ring-sky-500/30',
-  completed: 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30',
-  partial: 'bg-amber-500/15 text-amber-300 ring-amber-500/30',
-  failed: 'bg-rose-500/15 text-rose-300 ring-rose-500/30',
+  running: 'bg-new-bg text-new ring-new/30',
+  completed: 'bg-applied-bg text-applied ring-applied/30',
+  partial: 'bg-warn-bg text-warn ring-warn/30',
+  failed: 'bg-danger-bg text-danger ring-danger/30',
 };
 
 export function runStatusClass(status: RunStatus): string {
@@ -85,8 +104,17 @@ export function runStatusClass(status: RunStatus): string {
 
 /** Tailwind needs literal class names, so the score ramp is spelled out. */
 export function scoreClass(score: number): string {
-  if (score >= 85) return 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30';
-  if (score >= 65) return 'bg-lime-500/15 text-lime-300 ring-lime-500/30';
-  if (score >= 40) return 'bg-amber-500/15 text-amber-300 ring-amber-500/30';
-  return 'bg-rose-500/15 text-rose-300 ring-rose-500/30';
+  if (score >= 85) return 'bg-success-bg text-success ring-success/30';
+  if (score >= 65) return 'bg-applied-bg text-applied ring-applied/30';
+  if (score >= 40) return 'bg-warn-bg text-warn ring-warn/30';
+  return 'bg-danger-bg text-danger ring-danger/30';
+}
+
+/** One word for a score, for the "why is this ranked here" line under a card. */
+export function scoreLabel(score: number | null | undefined): string {
+  if (score === null || score === undefined) return 'not scored yet';
+  if (score >= 85) return 'excellent match';
+  if (score >= 65) return 'strong match';
+  if (score >= 40) return 'possible match';
+  return 'weak match';
 }

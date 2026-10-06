@@ -28,6 +28,9 @@ import { SourcesRegistry } from './sources/sources.registry.js';
     RemotiveSource,
     GreenhouseSource,
   ],
-  exports: [JobsService, SourcesRegistry],
+  // ScorerService is exported for the admin dashboard, which reports the model
+  // actually serving requests and whether the fallback is currently in use.
+  // Read-only use: the dashboard observes the chain, it does not drive it.
+  exports: [JobsService, ScorerService, SourcesRegistry],
 })
 export class JobsModule {}

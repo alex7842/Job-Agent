@@ -1,11 +1,9 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
-  DOCUMENT_STATUS,
   MAX_QUERY_CHARS,
   VectorKind,
   reciprocalRankFusion,
-  type IngestDocumentsResult,
   type IngestJobsResult,
   type SearchHit,
   type SearchRequest,
@@ -21,8 +19,6 @@ import {
 } from '../ports.js';
 import type { EmbeddingProvider, ObjectStore, VectorStore } from '../ports.js';
 import { chunkText } from './chunker.js';
-import { TextExtractor } from './text-extractor.service.js';
-import { DocumentRepository } from '../database/document.repository.js';
 
 /** How many characters of a chunk to return as a human-readable snippet. */
 /** Env values are strings; a bad one falls back rather than becoming NaN. */
@@ -52,167 +48,14 @@ export class IngestionService {
     @Inject(EMBEDDING_PROVIDER) private readonly embeddings: EmbeddingProvider,
     @Inject(VECTOR_STORE) private readonly vectors: VectorStore,
     @Inject(OBJECT_STORE) private readonly objects: ObjectStore,
-    private readonly extractor: TextExtractor,
-    private readonly documents: DocumentRepository,
     private readonly config: ConfigService,
   ) {}
-
-  // ---------- documents ----------
-
-  /**
-   * Index one stored document: download it, extract text, chunk, embed, upsert.
-   *
-   * Ordering matters. The old chunk vectors are deleted only after the new ones
-   * are written, so a failure mid-flight leaves the previous version searchable
-   * instead of a hole. Deleting first would make a transient Gemini error look
-   * like the user's resume disappeared.
-   */
-  async ingestDocument(documentId: string): Promise<IngestDocumentsResult> {
-    const doc = await this.documents.findById(documentId);
-    if (!doc) {
-      return {
-        documentId,
-        chunks: 0,
-        indexed: 0,
-        status: DOCUMENT_STATUS.FAILED,
-        errorMessage: 'Document not found',
-      };
-    }
-    if (doc.status === DOCUMENT_STATUS.DELETED) {
-      return { documentId, chunks: 0, indexed: 0, status: DOCUMENT_STATUS.DELETED };
-    }
-
-    await this.documents.updateStatus(documentId, DOCUMENT_STATUS.INDEXING);
-    const namespace = namespaceFor(doc.profileId);
-    const idPrefix = `${VectorKind.DOCUMENT}:${documentId}:`;
-
-    try {
-      const object = await this.objects.get(doc.objectKey);
-      const extracted = await this.extractor.extract(object.body, doc.fileName);
-
-      if (!extracted.text) {
-        // A scanned PDF has no text layer. Say so plainly rather than marking it
-        // ready with zero searchable content.
-        await this.documents.updateStatus(
-          documentId,
-          DOCUMENT_STATUS.FAILED,
-          'No extractable text. The file is probably a scan or image; upload a text-based PDF or DOCX.',
-          0,
-        );
-        await this.documents.setExtractedText(documentId, null);
-        return {
-          documentId,
-          chunks: 0,
-          indexed: 0,
-          status: DOCUMENT_STATUS.FAILED,
-          errorMessage: 'No extractable text',
-        };
-      }
-
-      // Persist the extracted text before embedding: a search built from this
-      // document is useful even if the vector write below fails, and re-running
-      // the extractor to recover the text would mean re-reading the object.
-      await this.documents.setExtractedText(documentId, extracted.text);
-
-      const chunks = chunkText(extracted.text);
-      const records: VectorRecord[] = [];
-
-      if (chunks.length > 0) {
-        const vectors = await this.embeddings.embed(chunks.map((c) => c.text));
-        chunks.forEach((chunk, i) => {
-          const values = vectors[i];
-          if (!values) throw new Error(`Embedding provider returned no vector for chunk ${i}`);
-          records.push({
-            // Deterministic id => re-indexing the same document overwrites in place.
-            id: vectorId(VectorKind.DOCUMENT, documentId, chunk.index),
-            values,
-            metadata: {
-              kind: VectorKind.DOCUMENT,
-              profileId: doc.profileId,
-              userId: doc.userId,
-              documentId: doc.documentId,
-              documentKind: doc.kind,
-              chunkIndex: chunk.index,
-              title: doc.fileName,
-              text: chunk.text,
-            },
-          });
-        });
-
-        await this.vectors.upsert(namespace, records);
-      }
-
-      // Drop only the chunks this generation did not replace. A plain prefix
-      // delete here would also remove what was just written; and deleting before
-      // the upsert would leave a searchable hole if embedding failed halfway.
-      // Ids are deterministic, so "stale" is exactly "present but not in this set".
-      const stale = (await this.vectors.listIds(namespace, idPrefix)).filter(
-        (id) => !records.some((r) => r.id === id),
-      );
-      if (stale.length > 0) {
-        await this.vectors.deleteByIds(namespace, stale);
-        this.log.debug(`Removed ${stale.length} stale chunk(s) for document ${documentId}`);
-      }
-
-      await this.documents.updateStatus(documentId, DOCUMENT_STATUS.READY, null, records.length);
-
-      this.log.log(
-        `Indexed document ${documentId} (${records.length} chunks, ${extracted.detected})`,
-      );
-      return {
-        documentId,
-        chunks: chunks.length,
-        indexed: records.length,
-        status: DOCUMENT_STATUS.READY,
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.log.error(`Failed to index document ${documentId}: ${message}`);
-      await this.documents.updateStatus(documentId, DOCUMENT_STATUS.FAILED, message, 0);
-      return {
-        documentId,
-        chunks: 0,
-        indexed: 0,
-        status: DOCUMENT_STATUS.FAILED,
-        errorMessage: message,
-      };
-    }
-  }
-
-  /** Index every ready document for a profile; used to warm a new namespace. */
-  async ingestAllForProfile(profileId: string): Promise<IngestDocumentsResult[]> {
-    const rows = await this.documents.listByProfile(profileId, {
-      statuses: [DOCUMENT_STATUS.UPLOADED, DOCUMENT_STATUS.READY, DOCUMENT_STATUS.FAILED],
-    });
-    const results: IngestDocumentsResult[] = [];
-    // Sequential on purpose: a burst of concurrent embedding calls is the
-    // fastest way to hit a provider rate limit and fail every document at once.
-    for (const row of rows) {
-      results.push(await this.ingestDocument(row.documentId));
-    }
-    return results;
-  }
-
-  /** Remove a document's vectors and mark it deleted. Idempotent. */
-  async deleteDocument(documentId: string, profileId: string): Promise<boolean> {
-    const doc = await this.documents.findOwned(documentId, profileId);
-    if (!doc) return false;
-
-    await this.vectors.deleteByPrefix(
-      namespaceFor(profileId),
-      `${VectorKind.DOCUMENT}:${documentId}:`,
-    );
-    await this.documents.markDeleted(documentId);
-    this.log.log(`Deleted document ${documentId}`);
-    return true;
-  }
 
   // ---------- jobs ----------
 
   /**
-   * Index job postings discovered by the job agent. Jobs are chunked the same
-   * way documents are so both corpora share one embedding space, which is what
-   * makes resume-to-posting comparison meaningful.
+   * Index job postings discovered by the job agent. Postings are chunked
+   * paragraph-first so a requirement list stays intact as one unit.
    */
   async ingestJobs(
     profileId: string,
@@ -290,7 +133,7 @@ export class IngestionService {
   async search(request: SearchRequest): Promise<SearchResponse> {
     const topK = request.topK ?? DEFAULT_TOP_K;
     const namespace = namespaceFor(request.profileId);
-    const queries = await this.buildQueries(request);
+    const queries = this.buildQueries(request);
     const meta = (): SearchResponseMeta => ({
       embeddingModel: this.embeddings.model,
       vectorStore: this.vectors.name,
@@ -349,22 +192,11 @@ export class IngestionService {
   /**
    * Collect the query variants, in the order they should be embedded.
    *
-   * The user's own documents come first because they are the most complete
-   * statement of what they are looking for. They are read from this service's
-   * index rather than re-extracted from the object: the text is already stored
-   * next to the vectors, and re-parsing a PDF on every search would put the
-   * slowest part of the pipeline on the latency-sensitive path.
+   * The candidate's resume text first, because it is the most complete statement
+   * of what they have done; then one query per role they want.
    */
-  private async buildQueries(request: SearchRequest): Promise<string[]> {
+  private buildQueries(request: SearchRequest): string[] {
     const queries: string[] = [];
-
-    if (request.documentIds?.length) {
-      const docs = await this.documents.extractedTextFor(request.profileId, request.documentIds);
-      for (const doc of docs) {
-        const text = truncate(doc.text, MAX_QUERY_CHARS);
-        if (text.trim()) queries.push(text);
-      }
-    }
 
     if (request.queryText?.trim()) queries.push(truncate(request.queryText, MAX_QUERY_CHARS));
 

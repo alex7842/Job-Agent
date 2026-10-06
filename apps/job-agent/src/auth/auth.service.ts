@@ -1,10 +1,12 @@
 import { ConflictException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash, randomUUID } from 'node:crypto';
 import { Repository, IsNull } from 'typeorm';
 import type { AuthUser, RegisterInput, TokenPair } from '@job-agent/shared';
 import { ProfileService } from '../profile/profile.service.js';
+import { isAdmin } from './admin.guard.js';
 import { PasswordService } from './password.service.js';
 import { RefreshToken } from './refresh-token.entity.js';
 import { User } from './user.entity.js';
@@ -28,6 +30,7 @@ export class AuthService {
     private readonly profiles: ProfileService,
     private readonly passwords: PasswordService,
     private readonly jwt: JwtService,
+    private readonly config: ConfigService,
   ) {}
 
   async register({ email, password, name }: RegisterInput): Promise<TokenPair> {
@@ -110,6 +113,10 @@ export class AuthService {
       email: user.email,
       profileId: profile.id,
       createdAt: user.createdAt.toISOString(),
+      // Read from ADMIN_EMAILS on every call rather than baked into the token:
+      // revoking an admin should take effect at the next request, not in 15
+      // minutes when the access token expires.
+      isAdmin: isAdmin(this.config, user.email),
     };
   }
 
@@ -148,6 +155,7 @@ export class AuthService {
         email: user.email,
         profileId,
         createdAt: user.createdAt.toISOString(),
+        isAdmin: isAdmin(this.config, user.email),
       },
     };
   }

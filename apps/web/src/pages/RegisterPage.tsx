@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router';
-import { AuthCard, AuthError, Field, useAuthForm } from '@/components/AuthForm';
+import { AuthCard, AuthError, AuthSubmit, Field, useAuthForm } from '@/components/AuthForm';
 import { useAuth } from '@/lib/auth';
 
 export function RegisterPage() {
@@ -23,7 +23,7 @@ export function RegisterPage() {
       footer={
         <>
           Already registered?{' '}
-          <Link to="/login" className="text-neutral-200 hover:text-neutral-50">
+          <Link to="/login" className="font-medium text-accent hover:underline">
             Sign in
           </Link>
         </>
@@ -59,15 +59,9 @@ export function RegisterPage() {
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
-        <p className="text-xs text-neutral-600">At least 8 characters.</p>
+        <p className="text-xs text-subtle">At least 8 characters.</p>
 
-        <button
-          type="submit"
-          disabled={busy}
-          className="w-full rounded-md bg-neutral-100 px-3 py-2 text-sm font-medium text-neutral-900 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {busy ? 'Creating…' : 'Create account'}
-        </button>
+        <AuthSubmit busy={busy}>{busy ? 'Creating…' : 'Create account'}</AuthSubmit>
       </form>
     </AuthCard>
   );

@@ -25,8 +25,14 @@ const AuthContext = createContext<AuthState | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const cached = tokens.cachedUser();
+  // Optimistic paint from the cached session: enough to render the chrome while
+  // /auth/me is in flight. `isAdmin` is deliberately false rather than guessed —
+  // it is never read before /auth/me replaces this object, so defaulting it to
+  // true would briefly show admin-only UI to a non-admin.
   const [user, setUser] = useState<AuthUser | null>(
-    cached ? { id: cached.id, email: cached.email, profileId: '', createdAt: '' } : null,
+    cached
+      ? { id: cached.id, email: cached.email, profileId: '', createdAt: '', isAdmin: false }
+      : null,
   );
   const [status, setStatus] = useState<AuthState['status']>(
     tokens.access() ? 'loading' : 'anonymous',

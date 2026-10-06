@@ -5,11 +5,7 @@ import {
   MIN_INTERNAL_SECRET_LENGTH,
   internalToken,
 } from '@job-agent/shared/internal-auth';
-import type {
-  IngestDocumentsResult,
-  PresignDocumentResponse,
-  SearchResponse,
-} from '@job-agent/shared';
+import type { ResumeLink, SearchResponse } from '@job-agent/shared';
 
 /** Extra headers the relayed-upload endpoint needs to verify what it received. */
 const RELAY_HEADERS = {
@@ -126,48 +122,40 @@ export class RagClientService {
     return this.call<SearchResponse>('POST', '/internal/search', { body });
   }
 
-  /** Where to send a document's bytes. Also registers the document on that side. */
-  presignUpload(body: unknown): Promise<PresignDocumentResponse | null> {
-    return this.call<PresignDocumentResponse>('POST', '/internal/documents/presign', { body });
+  health(): Promise<Record<string, unknown> | null> {
+    return this.call<Record<string, unknown>>('GET', '/health');
   }
 
   /**
-   * Relay a document's bytes in local mode, where there is no bucket to presign
-   * against. The RAG service stores and indexes them in one step.
+   * Store a resume and get its text back in one call. No catalog row and no Kafka
+   * message: a resume belongs to one profile, so there is nothing to reconcile
+   * later and the caller is waiting for the answer.
    */
-  putContent(
-    documentId: string,
+  putResume(
     profileId: string,
+    fileName: string,
     content: Buffer,
     contentType: string,
-  ): Promise<IngestDocumentsResult | null> {
-    return this.call<IngestDocumentsResult>('PUT', `/internal/documents/${documentId}/content`, {
+  ): Promise<{ objectKey: string; text: string; detected: string; truncated: boolean } | null> {
+    return this.call('POST', '/internal/resumes', {
       raw: content,
       contentType,
-      // The declared size is advisory; the RAG service compares it with the bytes
-      // that actually arrived and rejects a mismatch.
       headers: {
+        'x-rag-file-name': encodeURIComponent(fileName),
         [RELAY_HEADERS.profileId]: profileId,
-        [RELAY_HEADERS.sizeBytes]: String(content.length),
       },
     });
   }
 
-  /** Re-run extraction and embedding for a document that already has an object. */
-  ingestDocument(documentId: string, profileId: string): Promise<IngestDocumentsResult | null> {
-    return this.call<IngestDocumentsResult>('POST', '/internal/documents/ingest', {
-      body: { documentId, profileId },
+  /**
+   * A signed URL for the resume already in the bucket. The token is minted over
+   * the path without its query string, so `key` travels as a parameter and does
+   * not need to be part of the signature.
+   */
+  resumeLink(profileId: string, objectKey: string, fileName: string): Promise<ResumeLink | null> {
+    const query = new URLSearchParams({ key: objectKey, fileName });
+    return this.call('GET', `/internal/resumes/link?${query}`, {
+      headers: { [RELAY_HEADERS.profileId]: profileId },
     });
-  }
-
-  /** Drop a document's vectors. */
-  deleteDocument(documentId: string, profileId: string): Promise<{ deleted: boolean } | null> {
-    return this.call<{ deleted: boolean }>('POST', '/internal/documents/delete', {
-      body: { documentId, profileId },
-    });
-  }
-
-  health(): Promise<Record<string, unknown> | null> {
-    return this.call<Record<string, unknown>>('GET', '/health');
   }
 }

@@ -1,5 +1,4 @@
 import type { RawJob } from './domain.js';
-import type { DocumentKind } from './rag.js';
 /** jobs.raw — one message per posting, keyed by profileId (ordering per profile). */
 export interface RawJobEvent {
   runId: string;
@@ -49,47 +48,4 @@ export interface JobIndexEvent {
   location?: string;
   salaryText?: string;
   description?: string;
-}
-
-/**
- * documents.changed — a document object landed in the bucket (or was replaced).
- * The RAG service downloads it, extracts text, and (re)indexes it. Consumers
- * must be idempotent: the object is addressed by key, so a redelivery simply
- * re-derives the same chunks.
- */
-export interface DocumentChangedEvent {
-  documentId: string;
-  profileId: string;
-  userId: string;
-  objectKey: string;
-  fileName: string;
-  mimeType: string;
-  kind: DocumentKind;
-  sizeBytes: number;
-  /** The resume the user picked as their search query source. */
-  isPrimary: boolean;
-  /** null on first upload; the object's ETag afterwards. */
-  etag: string | null;
-}
-
-/** documents.deleted — drop the vectors. The object itself is removed separately. */
-export interface DocumentDeletedEvent {
-  documentId: string;
-  profileId: string;
-  userId: string;
-}
-
-/**
- * documents.indexed — the RAG service finished (or failed) an indexing attempt.
- *
- * The job agent owns the document catalog the UI reads, but it cannot know
- * whether a PDF had a text layer or whether embedding worked, so the RAG service
- * reports the outcome back rather than the job agent guessing.
- */
-export interface DocumentIndexedEvent {
-  documentId: string;
-  profileId: string;
-  status: 'ready' | 'failed' | 'deleted';
-  chunkCount: number;
-  errorMessage: string | null;
 }

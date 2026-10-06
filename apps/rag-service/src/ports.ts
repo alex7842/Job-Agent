@@ -82,6 +82,20 @@ export interface ObjectStore {
   /** Signed URL the browser can upload to directly, so bytes never transit the API. */
   presignPut(key: string, contentType: string, expiresInSeconds: number): Promise<string>;
 
+  /**
+   * Signed, expiring URL the browser can open in a new tab to view a stored file.
+   *
+   * `fileName` sets the name and `inline` disposition so a PDF renders in the tab
+   * rather than being saved. `contentType` overrides the type S3 would send, which
+   * is what rescues an object stored as application/octet-stream by an older
+   * version — the browser downloads those rather than rendering them.
+   */
+  presignGet(
+    key: string,
+    expiresInSeconds: number,
+    options?: { fileName?: string; contentType?: string },
+  ): Promise<string>;
+
   delete(key: string): Promise<void>;
 
   /** Cheap health probe so /health can report a broken configuration. */

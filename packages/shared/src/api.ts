@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { ResumeData } from './resume.js';
 import {
   JOB_STATUSES,
   type JobPreferences,
@@ -6,7 +7,6 @@ import {
   type RunStats,
   type RunStatus,
 } from './domain.js';
-import { documentKindSchema, type DocumentKind, type UploadMode } from './rag.js';
 
 /**
  * Wire contract for the HTTP API in `apps/job-agent`. The NestJS DTOs
@@ -27,6 +27,12 @@ export type AuthUser = {
   email: string;
   profileId: string;
   createdAt: string;
+  /**
+   * True when the email is in ADMIN_EMAILS. Sent so the web app can hide the
+   * admin link, but advisory only: the API checks the same list itself, so a
+   * hand-rolled request gains nothing by pretending to be an admin.
+   */
+  isAdmin: boolean;
 };
 
 export type TokenPair = {
@@ -137,7 +143,17 @@ export type StartRunResult = { workflowId: string; runId: string };
 export type Profile = {
   id: string;
   name: string;
+  /** Text extracted from the uploaded resume. What the LLM and the vector query read. */
   resumeText: string;
+  resumeFileName: string | null;
+  resumeMimeType: string | null;
+  resumeSizeBytes: string | null;
+  resumeObjectKey: string | null;
+  /** What the parser read out of the file. Null until a resume is uploaded. */
+  resumeData: ResumeData | null;
+  resumeParsedAt: string | null;
+  /** Why the last parse failed, so the UI can say so rather than showing nothing. */
+  resumeError: string | null;
   preferences: JobPreferences;
   isActive: boolean;
   createdAt: string;
@@ -165,63 +181,6 @@ export const updateProfileSchema = z.object({
 });
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
 
-// ---------- documents ----------
-//
-// The job agent owns the catalog (what the user uploaded, and which file is
-// their primary resume); the RAG service owns the bytes and the vectors. These
-// are the shapes the browser sees.
-
-/**
- * `awaiting_upload` means a presigned URL was issued and the bytes have not
- * arrived. The other states are reported by the RAG service over
- * documents.indexed, since only it knows whether extraction succeeded.
- */
-export const JOB_AGENT_DOCUMENT_STATUSES = [
-  'awaiting_upload',
-  'indexing',
-  'ready',
-  'failed',
-  'deleted',
-] as const;
-export type JobAgentDocumentStatus = (typeof JOB_AGENT_DOCUMENT_STATUSES)[number];
-
-export type DocumentRecord = {
-  id: string;
-  kind: DocumentKind;
-  fileName: string;
-  mimeType: string;
-  sizeBytes: number;
-  status: JobAgentDocumentStatus;
-  isPrimary: boolean;
-  chunkCount: number;
-  errorMessage: string | null;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export const createDocumentSchema = z.object({
-  fileName: z.string().min(1).max(255),
-  mimeType: z.string().min(1).max(120),
-  sizeBytes: z.coerce.number().int().positive(),
-  kind: documentKindSchema,
-  /** Marks this as the resume used to build search queries. */
-  isPrimary: z.boolean().optional(),
-});
-export type CreateDocumentInput = z.infer<typeof createDocumentSchema>;
-
-/**
- * Where to send the bytes. `mode: 's3'` means PUT them at `uploadUrl` yourself
- * and then call POST /documents/:id/complete; `mode: 'local'` means PUT them at
- * `uploadPath` (this API) instead, which relays them to the RAG service.
- */
-export type CreateDocumentResult = {
-  document: DocumentRecord;
-  mode: UploadMode;
-  uploadUrl: string | null;
-  uploadPath: string | null;
-  maxBytes: number;
-};
-
 /** POST /runs/:id/semantic-rank and POST /jobs/semantic-rank */
 export type SemanticRankResult = {
   /** Jobs that received a semantic score. */
@@ -232,4 +191,90 @@ export type SemanticRankResult = {
   degraded: boolean;
   embeddingModel: string | null;
   vectorStore: string | null;
+};
+
+// ---------- admin ----------
+
+/** One provider in the scoring chain and what it last did. */
+export type AdminModelAttempt = {
+  provider: string;
+  model: string;
+  ok: boolean;
+  ms: number;
+  served: boolean;
+  error: string | null;
+  status: number | null;
+};
+
+/**
+ * Live state of the failover chain.
+ *
+ * `active` is the field that matters: it is the provider that will answer the
+ * next request, which is the *fallback* while the primary is parked after a
+ * rate limit. A dashboard showing only the configured model would report the
+ * wrong one during exactly the incident it exists to explain.
+ */
+export type AdminChainStatus = {
+  chain: AdminModelAttempt[];
+  active: { provider: string; model: string };
+  primaryParked: boolean;
+  cooldownRemainingMs: number;
+  failovers: Record<string, number>;
+  servedByPrimary: number;
+  servedByFallback: number;
+  failed: number;
+  startedAt: string;
+};
+
+/** GET /admin/overview — cross-profile system health. */
+export type AdminOverview = {
+  viewer: { email: string };
+  system: {
+    users: { total: number; profiles: number };
+    jobs: { total: number; awaitingScore: number; scoreFailed: number };
+    runs: {
+      byStatus: Record<string, number>;
+      running: string;
+      lastStartedAt: string | null;
+    };
+    /** Unpublished outbox rows, and how many have been stuck over 5 minutes. */
+    outbox: { pending: number; stuck: number };
+    recentJobs: {
+      id: string;
+      title: string;
+      company: string;
+      source: string;
+      matchScore: number | null;
+      scoredAt: string | null;
+      createdAt: string;
+    }[];
+    recentRuns: {
+      id: string;
+      workflowId: string;
+      status: string;
+      startedAt: string;
+      finishedAt: string | null;
+    }[];
+  };
+  models: {
+    scoring: {
+      /** Configured order, primary first. */
+      configured: string[];
+      model: string;
+      active: { provider: string; model: string };
+      /** Null when no fallback is configured, so there is no chain to report. */
+      status: AdminChainStatus | null;
+      resumeParsing: { configured: string[]; model: string };
+    };
+    embeddings: {
+      available: boolean;
+      reason: string | null;
+      degraded?: boolean;
+      model: string | null;
+      vectorStore: string | null;
+    };
+  };
+  sources: { name: string; enabled: boolean }[];
+  /** Distinct scoring failures with counts, most frequent first. */
+  scoreFailures: { error: string; count: string; latest: string }[];
 };

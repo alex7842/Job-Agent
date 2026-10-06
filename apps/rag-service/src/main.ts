@@ -29,6 +29,9 @@ async function bootstrap(): Promise<void> {
     '/internal/documents/:documentId/content',
     express.raw({ type: '*/*', limit: MAX_DOCUMENT_BYTES }),
   );
+  // The resume upload is relayed the same way, for the same reason: the bytes are
+  // a PDF or DOCX, which none of the registered parsers claim.
+  app.use('/internal/resumes', express.raw({ type: '*/*', limit: MAX_DOCUMENT_BYTES }));
 
   const config = app.get(ConfigService);
 
