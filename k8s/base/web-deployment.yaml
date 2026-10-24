@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: job-agent-web
+  namespace: jobly
+  labels:
+    app: job-agent-web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: job-agent-web
+  template:
+    metadata:
+      labels:
+        app: job-agent-web
+    spec:
+      containers:
+        - name: web
+          image: REPLACE_ACR_FQDN/job-agent-web:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10

@@ -19,25 +19,25 @@ There are no secrets here that are not already in `.env.example`; this file is a
 A deploy is not "start the server". This system is five deployable units plus a
 data layer:
 
-| Unit                | Entrypoint                                  | Port | Why it is separate              |
-| ------------------- | ------------------------------------------- | ---- | ------------------------------- |
-| `job-agent-api`     | `apps/job-agent` → `dist/main.js`           | 3000 | HTTP API + Kafka consumers      |
-| `job-agent-worker`  | `apps/job-agent` → `dist/temporal/worker.js` | —    | Temporal activity worker        |
-| `rag-service`       | `apps/rag-service` → `dist/main.js`         | 3001 | PDF parsing/OOM must not kill the pipeline |
-| `job-agent-web`     | `apps/web/dist` (static)                    | —    | SPA, no server code             |
-| `job-agent-migrate` | one-shot `migration:run`                    | —    | Never runs as a long-lived process |
+| Unit                | Entrypoint                                   | Port | Why it is separate                         |
+| ------------------- | -------------------------------------------- | ---- | ------------------------------------------ |
+| `job-agent-api`     | `apps/job-agent` → `dist/main.js`            | 3000 | HTTP API + Kafka consumers                 |
+| `job-agent-worker`  | `apps/job-agent` → `dist/temporal/worker.js` | —    | Temporal activity worker                   |
+| `rag-service`       | `apps/rag-service` → `dist/main.js`          | 3001 | PDF parsing/OOM must not kill the pipeline |
+| `job-agent-web`     | `apps/web/dist` (static)                     | —    | SPA, no server code                        |
+| `job-agent-migrate` | one-shot `migration:run`                     | —    | Never runs as a long-lived process         |
 
 Plus the data layer:
 
-| Dependency            | Local (`docker-compose.yml`)   | Job it does                              |
-| --------------------- | ------------------------------ | ---------------------------------------- |
-| PostgreSQL 16         | `postgres`                     | jobs, profiles, runs                     |
-| Kafka                 | `apache/kafka`                 | job events, document indexing            |
-| Temporal + its PG     | `temporal`, `temporal-postgres`| the job pipeline's durable workflows     |
-| Object storage        | (none — uses S3-compatible)    | uploaded resumes/documents               |
-| Vector index          | Pinecone                       | resume/job matching                      |
-| LLM APIs              | OpenRouter / Mistral / OpenAI  | scoring and classification               |
-| Job boards            | RapidAPI (JSearch), Adzuna     | the source postings                      |
+| Dependency        | Local (`docker-compose.yml`)    | Job it does                          |
+| ----------------- | ------------------------------- | ------------------------------------ |
+| PostgreSQL 16     | `postgres`                      | jobs, profiles, runs                 |
+| Kafka             | `apache/kafka`                  | job events, document indexing        |
+| Temporal + its PG | `temporal`, `temporal-postgres` | the job pipeline's durable workflows |
+| Object storage    | (none — uses S3-compatible)     | uploaded resumes/documents           |
+| Vector index      | Pinecone                        | resume/job matching                  |
+| LLM APIs          | OpenRouter / Mistral / OpenAI   | scoring and classification           |
+| Job boards        | RapidAPI (JSearch), Adzuna      | the source postings                  |
 
 The single most important thing to internalise: **the web container talks to the API
 through `/api`, and only `/api`.** In dev and on the PM2 host, `vite preview` proxies
@@ -51,9 +51,11 @@ There are genuinely only a few patterns in use. Teams move left to right as the
 product and team grow.
 
 ### L0 — Run it locally
+
 `pnpm dev` + `docker compose up`. Good for development, not a deploy.
 
 ### L1 — Single VM + a process manager
+
 Build on the box, run four processes under PM2/systemd, put nginx in front.
 **This is what we ship today.**
 
@@ -62,13 +64,16 @@ Build on the box, run four processes under PM2/systemd, put nginx in front.
   "buy a bigger box", and a bad deploy can leave you staring at a restart loop.
 
 ### L2 — Containers on a VM
+
 Build a Docker image, run it with Docker Compose on the same VM.
+
 - ✅ Build environment == run environment. The `@temporalio/core-bridge` /
   `@swc/core` native-module problem disappears — the image already contains the
   right binaries.
 - ❌ You still own patching, TLS renewal, backups, and the host itself.
 
 ### L3 — Managed orchestrator (what most teams land on)
+
 Push images to a registry; a managed service runs N copies behind a load balancer.
 On AWS that is **ECS Fargate** (most common for a team this size), **App Runner**
 (even simpler, fewer knobs), or **EKS** (only if you already run Kubernetes).
@@ -78,6 +83,7 @@ On AWS that is **ECS Fargate** (most common for a team this size), **App Runner*
 - ❌ More moving parts to define as code; you must build real images first.
 
 ### L4 — Split the deploy by the thing being deployed
+
 Different tiers deploy differently:
 
 - **Static frontend** → S3 + CloudFront. It is just files. There is no "restart",
@@ -92,12 +98,12 @@ is what makes deploys scary.
 
 ### What the industry actually chooses
 
-| Team / stage                        | Typical setup                                              |
-| ----------------------------------- | ---------------------------------------------------------- |
-| Solo, early                         | One VPS + PM2, or a PaaS (Railway, Render, Fly)            |
-| Small product team                  | **S3/CloudFront + ECS Fargate + RDS + GitHub Actions**     |
-| Needs queue/async guarantees        | + MSK/SQS + Temporal Cloud                                 |
-| Large / multi-team                  | EKS + ArgoCD, infra in Terraform                           |
+| Team / stage                 | Typical setup                                          |
+| ---------------------------- | ------------------------------------------------------ |
+| Solo, early                  | One VPS + PM2, or a PaaS (Railway, Render, Fly)        |
+| Small product team           | **S3/CloudFront + ECS Fargate + RDS + GitHub Actions** |
+| Needs queue/async guarantees | + MSK/SQS + Temporal Cloud                             |
+| Large / multi-team           | EKS + ArgoCD, infra in Terraform                       |
 
 We are aiming squarely at row 2.
 
@@ -105,22 +111,22 @@ We are aiming squarely at row 2.
 
 ## 3. Target AWS architecture
 
-| This repo                         | AWS service                                         |
-| --------------------------------- | --------------------------------------------------- |
-| `apps/web/dist`                   | **S3** + **CloudFront** (origin access control)     |
-| `job-agent-api`                   | **ECS Fargate** service behind an **ALB**           |
-| `job-agent-worker`                | **ECS Fargate** service, **no load balancer**       |
-| `rag-service`                     | **ECS Fargate** service behind the same ALB on a path or its own listener |
-| `migration:run`                   | **ECS one-shot task** run before the new service serves traffic |
-| PostgreSQL 16                     | **RDS PostgreSQL** (Multi-AZ when you can afford it) |
-| Kafka                             | **MSK Serverless**, or keep Kafka on EC2 until you need it |
-| Temporal                          | **Temporal Cloud** (recommended)                    |
-| Object storage                    | **S3** — the adapter already supports it            |
-| Vector store                      | Keep **Pinecone** (moving it is a project of its own) |
-| Secrets / config                  | **Parameter Store** (free, structured) or **Secrets Manager** |
-| Images                            | **ECR**                                             |
-| DNS + TLS                         | **Route 53** + **ACM**                              |
-| CI/CD                             | **GitHub Actions** → ECR → ECS                      |
+| This repo          | AWS service                                                               |
+| ------------------ | ------------------------------------------------------------------------- |
+| `apps/web/dist`    | **S3** + **CloudFront** (origin access control)                           |
+| `job-agent-api`    | **ECS Fargate** service behind an **ALB**                                 |
+| `job-agent-worker` | **ECS Fargate** service, **no load balancer**                             |
+| `rag-service`      | **ECS Fargate** service behind the same ALB on a path or its own listener |
+| `migration:run`    | **ECS one-shot task** run before the new service serves traffic           |
+| PostgreSQL 16      | **RDS PostgreSQL** (Multi-AZ when you can afford it)                      |
+| Kafka              | **MSK Serverless**, or keep Kafka on EC2 until you need it                |
+| Temporal           | **Temporal Cloud** (recommended)                                          |
+| Object storage     | **S3** — the adapter already supports it                                  |
+| Vector store       | Keep **Pinecone** (moving it is a project of its own)                     |
+| Secrets / config   | **Parameter Store** (free, structured) or **Secrets Manager**             |
+| Images             | **ECR**                                                                   |
+| DNS + TLS          | **Route 53** + **ACM**                                                    |
+| CI/CD              | **GitHub Actions** → ECR → ECS                                            |
 
 ### The three decisions worth making early
 
@@ -186,13 +192,13 @@ CMD ["node", "api/dist/main.js"]
 
 Then vary the `CMD` per service:
 
-| Service       | `CMD`                                        | Health check                     |
-| ------------- | -------------------------------------------- | -------------------------------- |
-| `api`         | `node api/dist/main.js`                      | `GET /` or `/api/runs?limit=1`   |
-| `worker`      | `node api/dist/temporal/worker.js`           | none (Temporal has its own)      |
-| `rag`         | `node rag/dist/main.js`                      | its listen port on `:3001`       |
-| `web`         | `nginx:alpine` serving `/usr/share/nginx/html` | `GET /`                        |
-| `migrate`     | `node api/dist/main.js` equivalent, or the package script | `exit 0`        |
+| Service   | `CMD`                                                     | Health check                   |
+| --------- | --------------------------------------------------------- | ------------------------------ |
+| `api`     | `node api/dist/main.js`                                   | `GET /` or `/api/runs?limit=1` |
+| `worker`  | `node api/dist/temporal/worker.js`                        | none (Temporal has its own)    |
+| `rag`     | `node rag/dist/main.js`                                   | its listen port on `:3001`     |
+| `web`     | `nginx:alpine` serving `/usr/share/nginx/html`            | `GET /`                        |
+| `migrate` | `node api/dist/main.js` equivalent, or the package script | `exit 0`                       |
 
 **Add a real `/health` endpoint.** The API currently only has `GET /` returning
 `"Hello World!"`. An ALB target group wants a cheap, unauthenticated, dependency-aware
@@ -311,13 +317,13 @@ One VPC, three private subnets for tasks, three public for the ALB + NAT:
 
 One task definition per unit, revisioned. The critical fields:
 
-| Field          | Value                                                        |
-| -------------- | ------------------------------------------------------------ |
+| Field          | Value                                                                                                                   |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | CPU / memory   | api `512/1024`, rag `1024/2048` (PDF spikes — `ecosystem.config.cjs` caps it at 768M), worker `512/1024`, web `256/512` |
-| Task role      | IAM role with S3 + SSM access                                |
-| Execution role | IAM role that pulls from ECR and reads secrets               |
-| Health check   | `/health`, `healthy-threshold 2`, `unhealthy-threshold 3`, `30s` |
-| Logging        | awslogs driver → CloudWatch Logs, one log group per service  |
+| Task role      | IAM role with S3 + SSM access                                                                                           |
+| Execution role | IAM role that pulls from ECR and reads secrets                                                                          |
+| Health check   | `/health`, `healthy-threshold 2`, `unhealthy-threshold 3`, `30s`                                                        |
+| Logging        | awslogs driver → CloudWatch Logs, one log group per service                                                             |
 
 `rag-service` gets the biggest memory allotment on purpose: extraction and batched
 embeddings are the memory spikes, and letting it OOM-kill the host is how the whole
@@ -377,7 +383,7 @@ Two ordering rules that matter more than anything else in this section:
   schema it does not understand. Rolling migration and code out together is fine
   only when migrations are backward-compatible (additive first, destructive later).
 - **Do not gate the deploy on a human by default.** The `production` environment is
-  already set up so you *can* add required reviewers; add them only when the team is
+  already set up so you _can_ add required reviewers; add them only when the team is
   big enough that a queue is cheaper than an incident.
 
 ### GitHub Actions skeleton
@@ -389,12 +395,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: cd-production          # never cancel mid-deploy; a half-rolled-out
-  cancel-in-progress: false     # stack is worse than a slow queue
+  group: cd-production # never cancel mid-deploy; a half-rolled-out
+  cancel-in-progress: false # stack is worse than a slow queue
 
 permissions:
   contents: read
-  id-token: write               # OIDC — no long-lived AWS keys in GitHub
+  id-token: write # OIDC — no long-lived AWS keys in GitHub
 
 jobs:
   deploy:
@@ -531,22 +537,22 @@ hope the dependencies still resolve".
 
 Fine for a personal or early-stage project:
 
-| Service                  | Shape                            | Rough monthly |
-| ------------------------ | -------------------------------- | ------------- |
-| ECS Fargate              | 4 tasks, 0.25 vCPU/0.5 GB        | $30–60        |
-| ALB                      | 1                                | ~$20          |
-| RDS PostgreSQL           | `db.t4g.micro`, single-AZ        | ~$20          |
-| NAT Gateway              | 1                                | ~$30 + data   |
-| S3 + CloudFront          | small                            | < $5          |
-| ECR, CloudWatch, SSM     | —                                | ~$5           |
-| MSK Serverless           | minimal                          | starts ~$30   |
-| Temporal Cloud           | starter namespace                | starts ~$50   |
-| Pinecone / job-board APIs| usage                            | varies        |
+| Service                   | Shape                     | Rough monthly |
+| ------------------------- | ------------------------- | ------------- |
+| ECS Fargate               | 4 tasks, 0.25 vCPU/0.5 GB | $30–60        |
+| ALB                       | 1                         | ~$20          |
+| RDS PostgreSQL            | `db.t4g.micro`, single-AZ | ~$20          |
+| NAT Gateway               | 1                         | ~$30 + data   |
+| S3 + CloudFront           | small                     | < $5          |
+| ECR, CloudWatch, SSM      | —                         | ~$5           |
+| MSK Serverless            | minimal                   | starts ~$30   |
+| Temporal Cloud            | starter namespace         | starts ~$50   |
+| Pinecone / job-board APIs | usage                     | varies        |
 
 **Ways to cut this in half:** skip NAT by putting tasks in public subnets with
 security groups locked down; run `db.t4g.micro` single-AZ while non-critical; keep
 Kafka/Temporal in Docker Compose on one small EC2 instance during Phases 1–2 (that
-alone removes $80+/month). MSK and Temporal Cloud are the two items to adopt *last*,
+alone removes $80+/month). MSK and Temporal Cloud are the two items to adopt _last_,
 when their operational cost actually hurts.
 
 ---

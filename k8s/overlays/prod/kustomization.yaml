@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: jobly
+resources:
+  - ../../base
+images:
+  - name: REPLACE_ACR_FQDN/job-agent-api
+    newName: REPLACE_ACR_FQDN/job-agent-api
+    newTag: latest
+  - name: REPLACE_ACR_FQDN/job-agent-worker
+    newName: REPLACE_ACR_FQDN/job-agent-worker
+    newTag: latest
+  - name: REPLACE_ACR_FQDN/job-agent-rag
+    newName: REPLACE_ACR_FQDN/job-agent-rag
+    newTag: latest
+  - name: REPLACE_ACR_FQDN/job-agent-web
+    newName: REPLACE_ACR_FQDN/job-agent-web
+    newTag: latest

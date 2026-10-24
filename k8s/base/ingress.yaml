@@ -1,0 +1,34 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: jobly-ingress
+  namespace: jobly
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-staging
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+spec:
+  tls:
+    - hosts:
+        - REPLACE_YOUR_DOMAIN
+        - www.REPLACE_YOUR_DOMAIN
+      secretName: jobly-tls
+  rules:
+    - host: REPLACE_YOUR_DOMAIN
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: job-agent-api
+                port:
+                  number: 80
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: job-agent-web
+                port:
+                  number: 80

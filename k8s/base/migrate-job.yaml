@@ -1,0 +1,22 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jobly-migrate
+  namespace: jobly
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: REPLACE_ACR_FQDN/job-agent-api:latest
+          command: ["pnpm", "run", "migration:run"]
+          envFrom:
+            - configMapRef:
+                name: jobly-config
+            - secretRef:
+                name: jobly-secrets
+  backoffLimit: 3
