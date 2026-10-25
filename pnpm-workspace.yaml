@@ -2,6 +2,8 @@ packages:
   - 'apps/*'
   - 'packages/*'
 
+inject-workspace-packages: true
+
 # pnpm >= 10 blocks postinstall scripts unless they are allow-listed here.
 # esbuild / @tailwindcss/oxide / unrs-resolver ship platform binaries,
 # protobufjs generates its own loader, @swc/core builds its native fallback.

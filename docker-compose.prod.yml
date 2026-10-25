@@ -1,0 +1,94 @@
+services:
+  job-agent-api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    container_name: jobly-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_PORT=${DB_PORT:-5432}
+      - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka:9092}
+      - TEMPORAL_ADDRESS=${TEMPORAL_ADDRESS:-temporal:7233}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - jobly-net
+
+  job-agent-worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    container_name: jobly-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_PORT=${DB_PORT:-5432}
+      - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka:9092}
+      - TEMPORAL_ADDRESS=${TEMPORAL_ADDRESS:-temporal:7233}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - jobly-net
+    depends_on:
+      - job-agent-api
+
+  rag-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.rag
+    container_name: jobly-rag
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_PORT=${DB_PORT:-5432}
+      - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka:9092}
+      - TEMPORAL_ADDRESS=${TEMPORAL_ADDRESS:-temporal:7233}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - jobly-net
+
+  job-agent-web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+    container_name: jobly-web
+    restart: unless-stopped
+    env_file:
+      - .env
+    networks:
+      - jobly-net
+    expose:
+      - "80"
+
+  nginx:
+    image: nginx:alpine
+    container_name: jobly-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/prod.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
+    depends_on:
+      - job-agent-api
+      - job-agent-web
+      - rag-service
+    networks:
+      - jobly-net
+
+networks:
+  jobly-net:
+    driver: bridge

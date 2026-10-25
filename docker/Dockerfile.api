@@ -1,0 +1,30 @@
+FROM node:24-bookworm AS build
+WORKDIR /app
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+ENV CI=true
+ENV PNPM_CONFIRM_MODULES_PURGE=false
+RUN corepack enable && corepack prepare pnpm@11.8.0 --activate
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/job-agent/package.json apps/job-agent/
+COPY apps/rag-service/package.json apps/rag-service/
+COPY apps/web/package.json apps/web/
+COPY packages/ai/package.json packages/ai/
+COPY packages/shared/package.json packages/shared/
+
+RUN pnpm install --frozen-lockfile
+
+COPY . .
+
+RUN pnpm turbo run build --filter=job-agent
+RUN pnpm deploy --filter job-agent --prod --legacy /out/api
+
+FROM node:24-bookworm-slim
+WORKDIR /app
+ENV NODE_ENV=production
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=build /out/api ./app
+WORKDIR /app
+EXPOSE 3000
+CMD ["node", "app/dist/main.js"]
