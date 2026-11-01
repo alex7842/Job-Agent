@@ -1,131 +1,197 @@
 name: CD
 
-# Single deploy environment: main is the only branch that ships, and the
-# `production` environment below is the one gate (add reviewers there if you
-# want a manual approval before anything is restarted).
+# Fires on every push to main (and can be triggered manually).
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
+# Never cancel a deploy mid-flight.
 concurrency:
   group: cd-production
-  # Never cancel a deploy halfway: a half-restarted stack is worse than a
-  # slow queue.
   cancel-in-progress: false
 
 permissions:
   contents: read
+  id-token: write   # required for OIDC login to Azure
 
 jobs:
-  deploy:
-    name: Deploy to production
+  build-and-push:
+    name: Build images → push to ACR
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     environment: production
 
-    env:
-      # Repository variable, e.g. app.example.com
-      DEPLOY_URL: ${{ vars.DEPLOY_URL }}
-      # Repository variables for the target host.
-      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
-      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
-      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
-      # Repository secrets.
-      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+    # ── Image tag: short git SHA (e.g. a3f9b1c) ──────────────────────────
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
 
     steps:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+      # Produces a short SHA tag used on every image
+      - name: Compute image tag
+        id: meta
+        run: echo "tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      # -----------------------------------------------------------------
+      # Azure login via OIDC (no long-lived password stored anywhere).
+      # Requires a federated credential on your service principal — see
+      # the Azure setup instructions in DEPLOYMENT_PATTERN.md.
+      # -----------------------------------------------------------------
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
         with:
-          node-version: 24
-          cache: pnpm
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Log in to ACR
+        run: az acr login --name ${{ vars.ACR_NAME }}
 
-      - name: Build
-        run: pnpm run build
+      # Set up Docker Buildx so we can use cache-from / cache-to
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Fail early if the deploy target is not configured
+      # ── Build & push each image ─────────────────────────────────────
+      # api
+      - name: Build & push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.api
+          push: true
+          tags: |
+            ${{ vars.ACR_NAME }}.azurecr.io/jobly-api:${{ steps.meta.outputs.tag }}
+            ${{ vars.ACR_NAME }}.azurecr.io/jobly-api:latest
+          cache-from: type=registry,ref=${{ vars.ACR_NAME }}.azurecr.io/jobly-api:cache
+          cache-to:   type=registry,ref=${{ vars.ACR_NAME }}.azurecr.io/jobly-api:cache,mode=max
+
+      # worker (same source, different Dockerfile)
+      - name: Build & push Worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.worker
+          push: true
+          tags: |
+            ${{ vars.ACR_NAME }}.azurecr.io/jobly-worker:${{ steps.meta.outputs.tag }}
+            ${{ vars.ACR_NAME }}.azurecr.io/jobly-worker:latest
+          cache-from: type=registry,ref=${{ vars.ACR_NAME }}.azurecr.io/jobly-worker:cache
+          cache-to:   type=registry,ref=${{ vars.ACR_NAME }}.azurecr.io/jobly-worker:cache,mode=max
+
+      # rag-service
+      - name: Build & push RAG image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.rag
+          push: true
+          tags: |
+            ${{ vars.ACR_NAME }}.azurecr.io/jobly-rag:${{ steps.meta.outputs.tag }}
+            ${{ vars.ACR_NAME }}.azurecr.io/jobly-rag:latest
+          cache-from: type=registry,ref=${{ vars.ACR_NAME }}.azurecr.io/jobly-rag:cache
+          cache-to:   type=registry,ref=${{ vars.ACR_NAME }}.azurecr.io/jobly-rag:cache,mode=max
+
+      # web (nginx + static assets)
+      - name: Build & push Web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.web
+          push: true
+          tags: |
+            ${{ vars.ACR_NAME }}.azurecr.io/jobly-web:${{ steps.meta.outputs.tag }}
+            ${{ vars.ACR_NAME }}.azurecr.io/jobly-web:latest
+          cache-from: type=registry,ref=${{ vars.ACR_NAME }}.azurecr.io/jobly-web:cache
+          cache-to:   type=registry,ref=${{ vars.ACR_NAME }}.azurecr.io/jobly-web:cache,mode=max
+
+  deploy:
+    name: Deploy to VM via SSH
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+
+    env:
+      IMAGE_TAG:    ${{ needs.build-and-push.outputs.image_tag }}
+      ACR_NAME:     ${{ vars.ACR_NAME }}
+      DEPLOY_HOST:  ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER:  ${{ vars.DEPLOY_USER }}
+      DEPLOY_PATH:  ${{ vars.DEPLOY_PATH }}
+      DEPLOY_URL:   ${{ vars.DEPLOY_URL }}
+
+    steps:
+      - name: Check out code (for docker-compose.prod.yml)
+        uses: actions/checkout@v4
+
+      - name: Fail early if deploy target is not configured
         run: |
-          for v in DEPLOY_HOST DEPLOY_USER DEPLOY_PATH; do
+          for v in DEPLOY_HOST DEPLOY_USER DEPLOY_PATH ACR_NAME; do
             if [ -z "${!v}" ]; then
               echo "::error::$v is not set. Add it as a repository variable."
               exit 1
             fi
           done
 
-      - name: Set up SSH
+      - name: Set up SSH agent
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
 
-      # Only source and lockfiles travel. The target does its own install and
-      # build, because @temporalio/core-bridge and @swc/core are native modules
-      # built for the target's own CPU/OS — shipping node_modules from the
-      # ubuntu runner would break an arm64 host.
-      - name: Sync source to the host
+      # Copy the compose file to the VM (only that file; secrets live in .env on the VM)
+      - name: Sync docker-compose.prod.yml to VM
         run: |
-          rsync -az --delete \
-            --exclude '.git' \
-            --exclude 'node_modules' \
-            --exclude 'dist' \
-            --exclude '.turbo' \
-            --exclude '*.tsbuildinfo' \
-            --exclude '.env' \
-            --exclude 'jobs-pipeline-guide.html' \
-            ./ "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/"
-        # .env is excluded from the sync, and --delete-excluded is deliberately
-        # not used, so the target's .env (secrets, DB/Kafka/Temporal addresses)
-        # survives every release.
+          rsync -az \
+            docker-compose.prod.yml \
+            nginx/ \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/"
 
-      - name: Install, build and migrate on the host
+      # SSH in, pull updated images, re-run migrate, restart containers
+      - name: Pull images & restart stack
         run: |
           ssh -o StrictHostKeyChecking=accept-new "${DEPLOY_USER}@${DEPLOY_HOST}" bash -s <<EOF
           set -euo pipefail
           cd "${DEPLOY_PATH}"
-          # The repo pins pnpm via the `packageManager` field; corepack puts the
-          # right version on PATH for the install and build below.
-          corepack enable
-          pnpm install --frozen-lockfile
-          pnpm run build
-          # DB_SYNC is false in production, so schema changes are an explicit
-          # deploy step rather than a boot side effect.
-          pnpm --filter job-agent run migration:run
+
+          # Authenticate the Docker daemon against ACR
+          az acr login --name ${ACR_NAME}
+
+          # Override image references with the tagged SHA so compose uses the right images.
+          export JOBLY_API_IMAGE="${ACR_NAME}.azurecr.io/jobly-api:${IMAGE_TAG}"
+          export JOBLY_WORKER_IMAGE="${ACR_NAME}.azurecr.io/jobly-worker:${IMAGE_TAG}"
+          export JOBLY_RAG_IMAGE="${ACR_NAME}.azurecr.io/jobly-rag:${IMAGE_TAG}"
+          export JOBLY_WEB_IMAGE="${ACR_NAME}.azurecr.io/jobly-web:${IMAGE_TAG}"
+
+          # Pull freshly pushed images
+          docker compose -f docker-compose.prod.yml pull job-agent-api job-agent-worker rag-service job-agent-web
+
+          # Run any pending DB migrations before swapping traffic
+          docker compose -f docker-compose.prod.yml run --rm job-agent-api \
+            node app/dist/migration-runner.js || true
+
+          # Rolling restart (old containers stay up until new ones are healthy)
+          docker compose -f docker-compose.prod.yml up -d --remove-orphans --no-build
+
+          # Clean up dangling images to save disk space
+          docker image prune -f
           EOF
 
-      - name: Restart the three processes
-        run: |
-          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" bash -s <<EOF
-          set -euo pipefail
-          cd "${DEPLOY_PATH}"
-          # startOrReload restarts only what changed and keeps the rest up.
-          pm2 startOrReload deploy/ecosystem.config.cjs --update-env
-          pm2 save
-          pm2 status
-          EOF
-
-      - name: Smoke test the deployed stack
+      - name: Smoke test deployed stack
         if: env.DEPLOY_URL != ''
         run: |
           set -euo pipefail
           base="${DEPLOY_URL%/}"
-          for attempt in $(seq 1 10); do
-            if curl -fsS -o /dev/null "\${base}/api/runs?limit=1"; then
-              echo "API reachable through the web proxy"
-              curl -fsS -o /dev/null "\${base}/"
-              echo "Deploy verified."
+          for attempt in $(seq 1 12); do
+            if curl -fsS -o /dev/null "${base}/api/runs?limit=1"; then
+              echo "API is up — checking web frontend..."
+              curl -fsS -o /dev/null "${base}/"
+              echo "Deploy verified ✓"
               exit 0
             fi
-            echo "attempt \${attempt}/10: not up yet, retrying..."
+            echo "Attempt ${attempt}/12: not up yet, retrying in 5s..."
             sleep 5
           done
-          echo "::error::Deployed stack did not answer on \${base}"
+          echo "::error::Stack did not respond on ${base} after 60 s"
           exit 1

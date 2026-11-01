@@ -3,6 +3,7 @@
   "ui": "stream",
   "envMode": "loose",
   "globalDependencies": ["pnpm-workspace.yaml"],
+  "concurrency": "12",
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

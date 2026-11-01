@@ -5,8 +5,8 @@ Keep it simple. We learn step by step, don't jump straight to full AKS + ArgoCD 
 ## Overview of Phases
 | Phase | Goal | Status |
 |-------|------|--------|
-| **Phase 1** | Simple deployment - Containers on a VM (Docker + Docker Compose) or Azure Container Apps + ACR | **Current (Do this first)** |
-| **Phase 2** | Automate - GitHub Actions to build/push to ACR and deploy | **Next** |
+| **Phase 1** | Simple deployment - Containers on a VM (Docker + Docker Compose) or Azure Container Apps + ACR | ✅ Done |
+| **Phase 2** | Automate - GitHub Actions to build/push to ACR and deploy | **Current** |
 | **Phase 3** | Orchestrate - Move to AKS + Kubernetes + ArgoCD (reuse images & `k8s/` manifests) | **Later** |
 
 ---
@@ -60,18 +60,192 @@ If you want less VM ops, use Azure Container Apps.
 ---
 
 ## Phase 2 — Automate deployment (GitHub Actions + ACR)
-After Phase 1 is working manually, automate it.
 
-**What to learn/do:**
-| Task | Details |
-|------|---------"
-| CI Pipeline | `.github/workflows/deploy.yml` - checkout, install pnpm/node, build, test (if any), build images |
-| Image tagging | Tag with `git sha`, `branch`, and `latest` on main |
-| Push to ACR | Login via service principal/OIDC (Azure login + acr login) |
-| Deploy | For VM: SSH + pull/run docker compose (rsync/docker compose pull/up). For Container Apps: update image via `az containerapp update |
-| Health checks & logs | Check container status, app logs, curl health endpoints |
-| Rollback | Revert to previous image tag (easy with tags/rollback actions) |
-| Safe config | Use GitHub Secrets for env vars/keys/certs |
+The CD workflow (`.github/workflows/cd.yml`) is now updated for Phase 2.  
+It builds all four images, pushes them to ACR, SSHs into the VM, and does a rolling restart.
+
+### What the workflow does
+| Step | Details |
+|------|---------|
+| Image tag | Short git SHA (e.g. `a3f9b1c`) + `latest` alias |
+| Azure login | OIDC federated credential — no passwords stored |
+| Build & push | `docker/build-push-action` with ACR layer cache |
+| Deploy | rsync compose file → SSH → `docker compose pull` → `docker compose up -d` |
+| Smoke test | `curl` the health endpoint up to 12 times |
+
+### Azure things you must set up manually (see steps below)
+See **"Phase 2 Azure Setup Steps"** section below.
+
+---
+
+### Phase 2 Azure Setup Steps
+
+#### Step 1 — Create an Azure Container Registry (ACR)
+
+```bash
+# Replace values as needed
+ACR_NAME=joblyacr          # must be globally unique, lowercase, 5-50 chars
+RG=jobly-rg                # your existing resource group
+LOCATION=eastus
+
+az acr create \
+  --resource-group $RG \
+  --name $ACR_NAME \
+  --sku Basic \
+  --admin-enabled false
+```
+
+Note your ACR login server: `joblyacr.azurecr.io`
+
+---
+
+#### Step 2 — Create a Service Principal for GitHub Actions (OIDC)
+
+OIDC is the modern approach — no passwords, tokens rotate automatically.
+
+```bash
+# Get your subscription ID
+SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+
+# Create the service principal
+az ad sp create-for-rbac \
+  --name "github-jobly-deploy" \
+  --role Contributor \
+  --scopes /subscriptions/$SUBSCRIPTION_ID \
+  --sdk-auth   # only needed if you want the JSON output for reference
+```
+
+Save the output — you need `clientId`, `tenantId`, `subscriptionId`.
+
+Then grant the SP permission to push to ACR:
+
+```bash
+SP_CLIENT_ID=<paste clientId here>
+ACR_ID=$(az acr show --name $ACR_NAME --query id -o tsv)
+
+az role assignment create \
+  --assignee $SP_CLIENT_ID \
+  --role AcrPush \
+  --scope $ACR_ID
+```
+
+---
+
+#### Step 3 — Add a Federated Credential (OIDC trust from GitHub)
+
+In the Azure Portal:
+1. Go to **Microsoft Entra ID** → **App registrations** → find `github-jobly-deploy`
+2. Click **Certificates & secrets** → **Federated credentials** → **Add credential**
+3. Choose scenario: **GitHub Actions deploying Azure resources**
+4. Fill in:
+   - Organization: your GitHub username / org
+   - Repository: `Job-Agent`
+   - Entity: **Branch**, value: `main`
+   - Name: `github-main-branch`
+5. Click **Add**
+
+Or via CLI:
+```bash
+APP_OBJECT_ID=$(az ad sp show --id $SP_CLIENT_ID --query appId -o tsv)
+
+az ad app federated-credential create \
+  --id $APP_OBJECT_ID \
+  --parameters '{
+    "name": "github-main-branch",
+    "issuer": "https://token.actions.githubusercontent.com",
+    "subject": "repo:<YOUR_GITHUB_ORG>/Job-Agent:ref:refs/heads/main",
+    "audiences": ["api://AzureADTokenExchange"]
+  }'
+```
+
+---
+
+#### Step 4 — Grant VM access to ACR (pull images on the VM)
+
+The VM's system-assigned managed identity (or the same SP) needs `AcrPull`:
+
+```bash
+VM_PRINCIPAL_ID=$(az vm show \
+  --resource-group $RG \
+  --name <your-vm-name> \
+  --query identity.principalId -o tsv)
+
+az role assignment create \
+  --assignee $VM_PRINCIPAL_ID \
+  --role AcrPull \
+  --scope $ACR_ID
+```
+
+Then on the VM, log Docker in once (or use managed identity automatically):
+```bash
+az login --identity
+az acr login --name $ACR_NAME
+```
+
+---
+
+#### Step 5 — Add GitHub Secrets & Variables
+
+Go to your repo → **Settings** → **Secrets and variables** → **Actions**
+
+**Secrets** (sensitive values):
+| Name | Value |
+|------|-------|
+| `AZURE_CLIENT_ID` | Service principal client ID |
+| `AZURE_TENANT_ID` | Your Azure tenant ID |
+| `AZURE_SUBSCRIPTION_ID` | Your Azure subscription ID |
+| `DEPLOY_SSH_KEY` | Private SSH key for your VM (the matching public key must be in `~/.ssh/authorized_keys` on the VM) |
+
+**Variables** (non-sensitive, visible in logs):
+| Name | Example Value |
+|------|---------------|
+| `ACR_NAME` | `joblyacr` |
+| `DEPLOY_HOST` | `20.x.x.x` (VM public IP or DNS) |
+| `DEPLOY_USER` | `azureuser` |
+| `DEPLOY_PATH` | `/home/azureuser/jobly` |
+| `DEPLOY_URL` | `https://yourdomain.com` |
+
+---
+
+#### Step 6 — Install Azure CLI on the VM
+
+The deploy SSH step runs `az acr login` on the VM to authenticate Docker.
+
+```bash
+curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+az login --identity   # uses the VM's managed identity
+az acr login --name joblyacr
+```
+
+---
+
+#### Step 7 — Push to main and watch it run
+
+Once secrets/variables are set:
+```bash
+git push origin main
+```
+
+Watch it at: `https://github.com/<you>/Job-Agent/actions`
+
+---
+
+### Rollback
+
+To roll back to any previous deploy:
+```bash
+# SSH into the VM
+IMAGE_TAG=<previous-sha>   # find it in the Actions run history
+ACR_NAME=joblyacr
+
+export JOBLY_API_IMAGE="${ACR_NAME}.azurecr.io/jobly-api:${IMAGE_TAG}"
+export JOBLY_WORKER_IMAGE="${ACR_NAME}.azurecr.io/jobly-worker:${IMAGE_TAG}"
+export JOBLY_RAG_IMAGE="${ACR_NAME}.azurecr.io/jobly-rag:${IMAGE_TAG}"
+export JOBLY_WEB_IMAGE="${ACR_NAME}.azurecr.io/jobly-web:${IMAGE_TAG}"
+
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d --no-build
+```
  
 ---
 

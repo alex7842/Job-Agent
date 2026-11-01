@@ -1,5 +1,10 @@
 services:
   job-agent-api:
+    # In Phase 2 the image is pulled from ACR; JOBLY_API_IMAGE is injected by
+    # the GitHub Actions deploy step (e.g. myacr.azurecr.io/jobly-api:a3f9b1c).
+    # If the variable is not set it falls back to a local build so the file
+    # still works during Phase 1 manual deployments.
+    image: ${JOBLY_API_IMAGE:-}
     build:
       context: .
       dockerfile: docker/Dockerfile.api
@@ -19,6 +24,7 @@ services:
       - jobly-net
 
   job-agent-worker:
+    image: ${JOBLY_WORKER_IMAGE:-}
     build:
       context: .
       dockerfile: docker/Dockerfile.worker
@@ -40,6 +46,7 @@ services:
       - job-agent-api
 
   rag-service:
+    image: ${JOBLY_RAG_IMAGE:-}
     build:
       context: .
       dockerfile: docker/Dockerfile.rag
@@ -59,6 +66,7 @@ services:
       - jobly-net
 
   job-agent-web:
+    image: ${JOBLY_WEB_IMAGE:-}
     build:
       context: .
       dockerfile: docker/Dockerfile.web
