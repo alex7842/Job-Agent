@@ -14,6 +14,7 @@ import { APP_NAME } from '@/lib/brand';
 import { useAuth } from '@/lib/auth';
 import { useTheme } from '@/lib/theme';
 
+// this is the nav items
 const NAV = [
   {
     to: '/',

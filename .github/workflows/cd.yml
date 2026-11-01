@@ -160,30 +160,35 @@ jobs:
       # SSH in, pull updated images, re-run migrate, restart containers
       - name: Pull images & restart stack
         run: |
-          ssh -o StrictHostKeyChecking=accept-new "${DEPLOY_USER}@${DEPLOY_HOST}" bash -s <<EOF
+          ssh -o StrictHostKeyChecking=yes "${DEPLOY_USER}@${DEPLOY_HOST}" bash -s <<EOF
           set -euo pipefail
+
           cd "${DEPLOY_PATH}"
 
-          # Authenticate the Docker daemon against ACR
-          az acr login --name ${ACR_NAME}
+          # Authenticate using Azure VM Managed Identity
+          az login --identity
 
-          # Override image references with the tagged SHA so compose uses the right images.
+          # Authenticate Docker with ACR
+          az acr login --name "${ACR_NAME}"
+
+          # Use the commit-specific image tags
           export JOBLY_API_IMAGE="${ACR_NAME}.azurecr.io/jobly-api:${IMAGE_TAG}"
           export JOBLY_WORKER_IMAGE="${ACR_NAME}.azurecr.io/jobly-worker:${IMAGE_TAG}"
           export JOBLY_RAG_IMAGE="${ACR_NAME}.azurecr.io/jobly-rag:${IMAGE_TAG}"
           export JOBLY_WEB_IMAGE="${ACR_NAME}.azurecr.io/jobly-web:${IMAGE_TAG}"
 
-          # Pull freshly pushed images
-          docker compose -f docker-compose.prod.yml pull job-agent-api job-agent-worker rag-service job-agent-web
+          # Pull the latest commit-specific images
+          docker compose -f docker-compose.prod.yml pull \
+            job-agent-api job-agent-worker rag-service job-agent-web
 
-          # Run any pending DB migrations before swapping traffic
+          # Run database migrations
           docker compose -f docker-compose.prod.yml run --rm job-agent-api \
-            node app/dist/migration-runner.js || true
+            node app/dist/migration-runner.js
 
-          # Rolling restart (old containers stay up until new ones are healthy)
+          # Restart application
           docker compose -f docker-compose.prod.yml up -d --remove-orphans --no-build
 
-          # Clean up dangling images to save disk space
+          # Clean dangling images
           docker image prune -f
           EOF
 
