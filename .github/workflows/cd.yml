@@ -140,6 +140,15 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
 
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          echo "${{ vars.DEPLOY_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+
+          chmod 600 ~/.ssh/known_hosts
+
       # Copy the compose file to the VM (only that file; secrets live in .env on the VM)
       - name: Sync docker-compose.prod.yml to VM
         run: |
